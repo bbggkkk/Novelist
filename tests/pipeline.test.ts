@@ -296,9 +296,9 @@ const REVIEWED_MCP_FIXTURE = [
   "  maxStringBytes: MAX_JSON_RPC_STRING_BYTES",
   "};",
   "function snapshotJsonValueShape(value, label, limits) {",
-  "  if (safeGetPrototypeOf(current, currentLabel) !== Array.prototype) {}",
-  "  safeGetOwnPropertyDescriptor(current, String(index), currentLabel);",
   "  const prototype = safeGetPrototypeOf(current, currentLabel);",
+  "  if (prototype !== Array.prototype && prototype !== null) {}",
+  "  safeGetOwnPropertyDescriptor(current, String(index), currentLabel);",
   "  for (const key of safeOwnKeys(current, currentLabel)) {}",
   "  const descriptor = safeGetOwnPropertyDescriptor(current, key, currentLabel);",
   "  for (const key of safeOwnKeys(value, label)) {}",
@@ -3771,7 +3771,7 @@ test("MCP tools call returns structured content and invalid requests return JSON
   const nonStandardArray = ["safe"];
   Object.setPrototypeOf(nonStandardArray, { inherited: "bad" });
   const nonStandardArrayProperty = await server.handle({ jsonrpc: "2.0", id: 39, method: "tools/list", params: { value: nonStandardArray } });
-  assert.match(JSON.stringify(nonStandardArrayProperty), /JSON-RPC request\.params\.value must be a standard array/);
+  assert.match(JSON.stringify(nonStandardArrayProperty), /JSON-RPC request\.params\.value must be a standard or snapshotted array/);
   let arrayGetterRan = false;
   const accessorArray = ["safe"];
   Object.defineProperty(accessorArray, "0", {
@@ -5900,6 +5900,28 @@ test("stdio processor returns errors for invalid top-level JSON-RPC values", asy
   assert.match(batchError.error?.message ?? "", /Request must be an object/);
   assert.equal(primitiveError.id, null);
   assert.match(primitiveError.error?.message ?? "", /Request must be an object/);
+});
+
+test("stdio processor serializes tools/list responses for MCP clients", async () => {
+  const output: string[] = [];
+  const server = new McpServer(pipelineInTemp(), new Logger("silent"));
+  const processor = new StdioLineProcessor(
+    server,
+    (line) => {
+      output.push(line);
+    }
+  );
+
+  processor.push('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"debug","version":"0.0.0"}}}\n');
+  processor.push('{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n');
+  await processor.drain();
+
+  const initialized = JSON.parse(output[0] ?? "{}") as { result?: { serverInfo?: { name?: string } } };
+  const listed = JSON.parse(output[1] ?? "{}") as { error?: { message?: string }; result?: { tools?: Array<{ name?: string }> } };
+
+  assert.equal(initialized.result?.serverInfo?.name, "novelist-mcp");
+  assert.equal(listed.error, undefined);
+  assert.equal(listed.result?.tools?.some((tool) => tool.name === "novel_health"), true);
 });
 
 test("stdio processor redacts inline secrets from handler failures", async () => {

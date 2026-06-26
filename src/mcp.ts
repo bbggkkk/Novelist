@@ -1262,8 +1262,9 @@ function snapshotJsonValueShape(value: unknown, label: string, limits: typeof JS
     }
     stack.add(current);
     if (Array.isArray(current)) {
-      if (safeGetPrototypeOf(current, currentLabel) !== Array.prototype) {
-        throw new Error(`${currentLabel} must be a standard array.`);
+      const prototype = safeGetPrototypeOf(current, currentLabel);
+      if (prototype !== Array.prototype && prototype !== null) {
+        throw new Error(`${currentLabel} must be a standard or snapshotted array.`);
       }
       if (current.length > limits.maxArrayItems) {
         throw new Error(`${currentLabel} must contain at most ${limits.maxArrayItems} array items.`);

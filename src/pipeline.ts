@@ -36,6 +36,8 @@ import {
 } from "./constants.js";
 import { validateVolumeState } from "./stateValidation.js";
 import { utf8ByteLengthUpTo } from "./utf8.js";
+import { PipelineOrchestrator } from "./pipeline/orchestrator.js";
+import type { PipelineStatus } from "./pipeline/model.js";
 
 const MAX_TITLE_INPUT_BYTES = 512;
 const MAX_OPTION_INPUT_BYTES = 256;
@@ -71,10 +73,12 @@ const PHASE_ORDER: PipelinePhase[] = [
 export class NovelPipeline {
   private readonly storage: NovelStorage;
   private readonly config: AppConfig;
+  private readonly orchestrator: PipelineOrchestrator;
 
   constructor(storage = new NovelStorage(), config: AppConfig = loadConfig()) {
     this.storage = storage;
     this.config = config;
+    this.orchestrator = new PipelineOrchestrator(storage);
   }
 
   async start(input: StartInput, signal?: ExecutionSignal): Promise<ToolResult> {
@@ -532,14 +536,16 @@ export class NovelPipeline {
 
   private async contextForPhase(state: VolumeState): Promise<Record<string, unknown>> {
     const base = summarizeState(state);
+    const pipelineStatus = await this.orchestrator.inspect(state);
+    const requiredAction = legacyRequiredAction(pipelineStatus);
+    const statusContext = { ...base, processId: pipelineStatus.processId, requiredAction };
     if (state.phase === "writing") {
-      const currentBeat = findCurrentBeat(state);
-      return { ...base, requiredAction: "submit_beat", currentBeat, currentBeatDraft: currentBeat ? await this.storage.readBeatDraftFile(state, currentBeat.chapterNo, currentBeat.beatNo) : undefined, previousBeatText: await this.previousBeatText(state), references: await this.referenceDocuments(state) };
+      const currentBeat = pipelineStatus.currentBeat ?? findCurrentBeat(state);
+      return { ...statusContext, currentBeat, currentBeatDraft: currentBeat ? await this.storage.readBeatDraftFile(state, currentBeat.chapterNo, currentBeat.beatNo) : undefined, previousBeatText: await this.previousBeatText(state), references: await this.referenceDocuments(state) };
     }
-    if (state.phase === "volume_outline") return { ...base, requiredAction: state.flowStatus === "pending_finalization" ? "finalize_outline" : "submit_outline", references: await this.referenceDocuments(state) };
-    if (state.phase === "epub") return { ...base, requiredAction: "build_epub" };
-    if (state.phase === "complete") return { ...base, requiredAction: "none" };
-    return { ...base, requiredAction: state.flowStatus === "pending_finalization" ? `finalize_${phaseKind(state.phase)}` : `submit_${phaseKind(state.phase)}`, references: await this.referenceDocuments(state) };
+    if (state.phase === "volume_outline") return { ...statusContext, references: await this.referenceDocuments(state) };
+    if (state.phase === "epub" || state.phase === "complete") return statusContext;
+    return { ...statusContext, references: await this.referenceDocuments(state) };
   }
 
   private async referenceDocuments(state: VolumeState): Promise<Record<string, boolean>> {
@@ -692,7 +698,11 @@ function setPhase(state: VolumeState, phase: PipelinePhase, flowStatus: VolumeSt
 function nextPhase(phase: PipelinePhase): PipelinePhase { return PHASE_ORDER[Math.min(PHASE_ORDER.indexOf(phase) + 1, PHASE_ORDER.length - 1)] ?? "complete"; }
 function worldScopeForPhase(phase: PipelinePhase): WorldScope | undefined { if (phase === "franchise_world") return "franchise"; if (phase === "work_world") return "work"; if (phase === "volume_world") return "volume"; return undefined; }
 function settingScopeForPhase(phase: PipelinePhase): SettingScope | undefined { if (phase === "franchise_setting") return "franchise"; if (phase === "work_setting") return "work"; if (phase === "volume_setting") return "volume"; return undefined; }
-function phaseKind(phase: PipelinePhase): "world" | "setting" { return phase.endsWith("world") ? "world" : "setting"; }
+function legacyRequiredAction(status: PipelineStatus): string {
+  if (status.requiredAction === "submit_document") return `submit_${status.target?.document ?? "document"}`;
+  if (status.requiredAction === "finalize_document") return `finalize_${status.target?.document ?? "document"}`;
+  return status.requiredAction;
+}
 function nextResult(state: VolumeState, context: Record<string, unknown>): ToolResult { return { status: state.flowStatus, message: "파이프라인의 현재 단계와 필요한 다음 작업입니다.", data: context }; }
 function summarizeState(state: VolumeState) { const beats = state.chapters.flatMap((chapter) => chapter.beats); return { franchiseId: state.franchiseId, workId: state.workId, volumeId: state.volumeId, phase: state.phase, flowStatus: state.flowStatus, currentChapterNo: state.currentChapterNo, currentBeatNo: state.currentBeatNo, completedBeats: beats.filter((beat) => beat.status === "complete").length, totalBeats: beats.length, ...(state.lastConsistencyFailure ? { lastConsistencyFailure: state.lastConsistencyFailure } : {}) }; }
 function errorMessage(error: unknown, root?: string): string { const secretRedacted = redactErrorMessage(error).replace(PIPELINE_ERROR_CONTROL_CHARS_GLOBAL, " "); const redacted = root ? secretRedacted.split(root).join("<data-root>") : secretRedacted; return truncatePipelineText(redacted, MAX_SUMMARY_TEXT_CHARS, MAX_SUMMARY_TEXT_BYTES); }

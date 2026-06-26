@@ -1,4 +1,5 @@
 import { CURRENT_STATE_SCHEMA_VERSION } from "./constants.js";
+import type { ActiveAction } from "./pipeline/model.js";
 import type { BeatState, ChapterState, ConsistencyReport, PipelineFlowStatus, PipelinePhase, VolumeState } from "./types.js";
 import { assertSafeId, ValidationError } from "./validation.js";
 import { utf8ByteLengthUpTo } from "./utf8.js";
@@ -21,6 +22,9 @@ import {
 const PHASES: PipelinePhase[] = ["franchise_world", "franchise_setting", "work_world", "work_setting", "volume_world", "volume_setting", "volume_outline", "writing", "epub", "complete"];
 const FLOW_STATUSES: PipelineFlowStatus[] = ["needs_input", "pending_finalization", "ready", "complete"];
 const BEAT_STATUSES: BeatState["status"][] = ["pending", "complete"];
+const PROCESS_IDS = ["franchise.world", "franchise.setting", "work.world", "work.setting", "volume.world", "volume.setting", "volume.outline", "volume.writing", "volume.epub", "volume.complete"] as const;
+const ACTION_KINDS = ["submit_document", "finalize_document", "submit_outline", "finalize_outline", "submit_beat", "save_beat_draft", "rewrite_beat", "build_epub"] as const;
+const ACTION_STATUSES = ["started", "artifact_written", "state_committed"] as const;
 const MAX_CHAPTER_TARGET_WORDS = MAX_BEATS_PER_CHAPTER * MAX_BEAT_TARGET_WORDS;
 const OBJECT_KEY_CONTROL_CHARS = /[\u0000-\u001f\u007f]/u;
 
@@ -28,7 +32,7 @@ export function validateVolumeState(value: unknown): VolumeState {
   const state = assertRecord(value, "VolumeState");
   assertKnownFields(state, "VolumeState", [
     "schemaVersion", "franchiseId", "franchiseName", "workId", "workTitle", "volumeId", "volumeTitle",
-    "phase", "flowStatus", "lastConsistencyFailure", "currentChapterNo", "currentBeatNo", "chapters", "createdAt", "updatedAt"
+    "phase", "flowStatus", "activeAction", "lastConsistencyFailure", "currentChapterNo", "currentBeatNo", "chapters", "createdAt", "updatedAt"
   ]);
   const chapters = boundedArrayField(state.chapters, "VolumeState.chapters", MAX_CHAPTERS).map(validateChapter);
   assertUnique(chapters.map((chapter) => chapter.chapterNo), "ChapterState.chapterNo");
@@ -48,6 +52,7 @@ export function validateVolumeState(value: unknown): VolumeState {
     volumeTitle: boundedSingleLineStringField(state.volumeTitle, "VolumeState.volumeTitle", MAX_TITLE_CHARS, MAX_TITLE_BYTES),
     phase: oneOf(state.phase, PHASES, "VolumeState.phase"),
     flowStatus: oneOf(state.flowStatus, FLOW_STATUSES, "VolumeState.flowStatus"),
+    ...(state.activeAction === undefined ? {} : { activeAction: validateActiveAction(state.activeAction) }),
     ...(state.lastConsistencyFailure === undefined ? {} : { lastConsistencyFailure: validateLastConsistencyFailure(state.lastConsistencyFailure) }),
     currentChapterNo: positiveInteger(state.currentChapterNo, "VolumeState.currentChapterNo"),
     currentBeatNo: positiveInteger(state.currentBeatNo, "VolumeState.currentBeatNo"),
@@ -68,6 +73,33 @@ export function validateVolumeState(value: unknown): VolumeState {
     throw new ValidationError("VolumeState complete phase requires every beat to be complete.");
   }
   return volumeState;
+}
+
+function validateActiveAction(value: unknown): ActiveAction {
+  const record = assertRecord(value, "ActiveAction");
+  assertKnownFields(record, "ActiveAction", ["id", "processId", "kind", "status", "target", "artifactPaths", "inputHash", "startedAt", "updatedAt"]);
+  return {
+    id: boundedSingleLineStringField(record.id, "ActiveAction.id", MAX_TITLE_CHARS, MAX_TITLE_BYTES),
+    processId: oneOf(record.processId, PROCESS_IDS, "ActiveAction.processId"),
+    kind: oneOf(record.kind, ACTION_KINDS, "ActiveAction.kind"),
+    status: oneOf(record.status, ACTION_STATUSES, "ActiveAction.status"),
+    ...(record.target === undefined ? {} : { target: validateActionTarget(record.target) }),
+    artifactPaths: boundedArrayField(record.artifactPaths, "ActiveAction.artifactPaths", 1000).map((item, index) => boundedSingleLineStringField(item, `ActiveAction.artifactPaths[${index}]`, MAX_TEXT_CHARS, MAX_TEXT_BYTES)),
+    inputHash: boundedSingleLineStringField(record.inputHash, "ActiveAction.inputHash", MAX_TITLE_CHARS, MAX_TITLE_BYTES),
+    startedAt: timestampField(record.startedAt, "ActiveAction.startedAt"),
+    updatedAt: timestampField(record.updatedAt, "ActiveAction.updatedAt")
+  };
+}
+
+function validateActionTarget(value: unknown): ActiveAction["target"] {
+  const record = assertRecord(value, "ActionTarget");
+  assertKnownFields(record, "ActionTarget", ["scope", "document", "chapterNo", "beatNo"]);
+  return {
+    ...(record.scope === undefined ? {} : { scope: oneOf(record.scope, ["franchise", "work", "volume"] as const, "ActionTarget.scope") }),
+    ...(record.document === undefined ? {} : { document: oneOf(record.document, ["world", "setting"] as const, "ActionTarget.document") }),
+    ...(record.chapterNo === undefined ? {} : { chapterNo: positiveInteger(record.chapterNo, "ActionTarget.chapterNo") }),
+    ...(record.beatNo === undefined ? {} : { beatNo: positiveInteger(record.beatNo, "ActionTarget.beatNo") })
+  };
 }
 
 function requiresChapters(phase: PipelinePhase): boolean {

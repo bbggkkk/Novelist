@@ -1,3 +1,5 @@
+import type { ActiveAction } from "./pipeline/model.js";
+
 export type PipelinePhase =
   | "franchise_world"
   | "franchise_setting"
@@ -90,6 +92,7 @@ export interface VolumeState {
   volumeTitle: string;
   phase: PipelinePhase;
   flowStatus: PipelineFlowStatus;
+  activeAction?: ActiveAction;
   lastConsistencyFailure?: LastConsistencyFailure;
   currentChapterNo: number;
   currentBeatNo: number;

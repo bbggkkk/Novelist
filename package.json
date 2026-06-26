@@ -1,0 +1,40 @@
+{
+  "name": "novelist-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for resumable AI-assisted novel writing pipelines.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "package.json"
+  ],
+  "bin": {
+    "novelist-mcp": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/src/cli.js', 0o755)\"",
+    "test": "npm run build && node dist/tests/pipeline.test.js",
+    "pack:check": "npm run build && npm pack --dry-run --json --cache /tmp/novelist-npm-cache | node scripts/pack-check.mjs -",
+    "verify": "npm test && npm run pack:check",
+    "start": "node dist/src/cli.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

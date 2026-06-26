@@ -217,10 +217,6 @@ function snapshotEpubArchive(value: Uint8Array): Uint8Array | undefined {
 
 function validateEpubStateMetadata(state: VolumeState): EpubStateMetadata {
   const value = assertObject(state, "EPUB state");
-  const phase = assertBoundedNonEmptyString(value.phase, "EPUB state.phase", MAX_EPUB_METADATA_CHARS);
-  if (phase !== "epub") {
-    throw new Error("EPUB state.phase must be epub.");
-  }
   const updatedAt = assertBoundedNonEmptyString(value.updatedAt, "EPUB state.updatedAt", MAX_EPUB_METADATA_CHARS);
   if (!isCanonicalUtcTimestamp(updatedAt)) {
     throw new Error("EPUB state.updatedAt must be an ISO timestamp string.");

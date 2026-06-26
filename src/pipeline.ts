@@ -19,7 +19,6 @@ import type {
   ChapterState,
   ConsistencyReport,
   OutlineChapterInput,
-  PipelinePhase,
   StartInput,
   ToolResult,
   VolumeState,
@@ -37,7 +36,8 @@ import {
 import { validateVolumeState } from "./stateValidation.js";
 import { utf8ByteLengthUpTo } from "./utf8.js";
 import { PipelineOrchestrator } from "./pipeline/orchestrator.js";
-import type { PipelineStatus } from "./pipeline/model.js";
+import type { PipelineStatus, ProcessId } from "./pipeline/model.js";
+import { PipelineStateManager } from "./pipeline/stateManager.js";
 
 const MAX_TITLE_INPUT_BYTES = 512;
 const MAX_OPTION_INPUT_BYTES = 256;
@@ -57,28 +57,17 @@ type SaveBeatDraftInput = { franchiseId?: string; workId?: string; volumeId?: st
 type RewriteBeatInput = { franchiseId?: string; workId?: string; volumeId?: string; current?: boolean; chapterNo: number; beatNo: number; text: string; consistencyReport: ConsistencyReport };
 type StartVolumeInput = { franchiseId: string; workId: string; volumeRequest: string; franchiseName?: string; workTitle?: string };
 
-const PHASE_ORDER: PipelinePhase[] = [
-  "franchise_world",
-  "franchise_setting",
-  "work_world",
-  "work_setting",
-  "volume_world",
-  "volume_setting",
-  "volume_outline",
-  "writing",
-  "epub",
-  "complete"
-];
-
 export class NovelPipeline {
   private readonly storage: NovelStorage;
   private readonly config: AppConfig;
   private readonly orchestrator: PipelineOrchestrator;
+  private readonly stateManager: PipelineStateManager;
 
   constructor(storage = new NovelStorage(), config: AppConfig = loadConfig()) {
     this.storage = storage;
     this.config = config;
     this.orchestrator = new PipelineOrchestrator(storage);
+    this.stateManager = new PipelineStateManager(storage);
   }
 
   async start(input: StartInput, signal?: ExecutionSignal): Promise<ToolResult> {
@@ -93,28 +82,12 @@ export class NovelPipeline {
       return this.storage.withCreationLock(franchiseId, workId, volumeId, async () => {
         if (await this.storage.stateExists(franchiseId, workId, volumeId)) {
           const existing = await this.storage.loadState(franchiseId, workId, volumeId);
-          await this.recoverAndSaveState(existing);
-          return nextResult(existing, await this.contextForPhase(existing));
+          await this.reconcileAndSaveState(existing);
+          return this.nextResult(existing);
         }
-        const now = new Date().toISOString();
-        const state = validateVolumeState({
-          schemaVersion: CURRENT_STATE_SCHEMA_VERSION,
-          franchiseId,
-          franchiseName: parsed.franchiseName,
-          workId,
-          workTitle,
-          volumeId,
-          volumeTitle,
-          phase: "franchise_world",
-          flowStatus: "needs_input",
-          currentChapterNo: 1,
-          currentBeatNo: 1,
-          chapters: [],
-          createdAt: now,
-          updatedAt: now
-        });
-        await this.recoverAndSaveState(state);
-        return nextResult(state, await this.contextForPhase(state));
+        const state = newVolumeState({ franchiseId, franchiseName: parsed.franchiseName, workId, workTitle, volumeId, volumeTitle, completedProcesses: [] });
+        await this.storage.saveState(state);
+        return this.nextResult(state);
       });
     });
   }
@@ -125,8 +98,8 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parseLocatorInput(input));
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
-        await this.recoverAndSaveState(state);
-        return nextResult(state, await this.contextForPhase(state));
+        await this.reconcileAndSaveState(state);
+        return this.nextResult(state);
       });
     });
   }
@@ -140,30 +113,22 @@ export class NovelPipeline {
       return this.storage.withCreationLock(parsed.franchiseId, parsed.workId, volumeId, async () => {
         if (await this.storage.stateExists(parsed.franchiseId, parsed.workId, volumeId)) {
           const existing = await this.storage.loadState(parsed.franchiseId, parsed.workId, volumeId);
-          await this.recoverAndSaveState(existing);
-          return nextResult(existing, await this.contextForPhase(existing));
+          await this.reconcileAndSaveState(existing);
+          return this.nextResult(existing);
         }
         const base = await this.existingWorkIdentity(parsed.franchiseId, parsed.workId, parsed.franchiseName, parsed.workTitle);
-        const now = new Date().toISOString();
-        const state = validateVolumeState({
-          schemaVersion: CURRENT_STATE_SCHEMA_VERSION,
+        const state = newVolumeState({
           franchiseId: parsed.franchiseId,
           franchiseName: base.franchiseName,
           workId: parsed.workId,
           workTitle: base.workTitle,
           volumeId,
           volumeTitle,
-          phase: "volume_world",
-          flowStatus: "needs_input",
-          currentChapterNo: 1,
-          currentBeatNo: 1,
-          chapters: [],
-          createdAt: now,
-          updatedAt: now
+          completedProcesses: ["franchise.world", "franchise.setting", "work.world", "work.setting"]
         });
         await this.requireWorkFoundation(state);
         await this.storage.saveState(state);
-        return nextResult(state, await this.contextForPhase(state));
+        return this.nextResult(state);
       });
     });
   }
@@ -175,12 +140,11 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
-        await this.recoverAndSaveState(state);
-        const scope = worldScopeForPhase(state.phase);
-        if (!scope || state.flowStatus !== "needs_input" || (parsed.scope && parsed.scope !== scope)) {
-          throw new Error(`Current phase does not accept world submission: phase=${state.phase}, status=${state.flowStatus}.`);
-        }
-        return this.acceptScopedDocument(state, scope, "world", parsed.text, parsed.consistencyReport);
+        await this.reconcileAndSaveState(state);
+        const status = await this.requireAction(state, "submit_document");
+        if (status.target?.document !== "world") throw new Error(`Current process does not accept world submission: process=${status.processId}.`);
+        if (parsed.scope && parsed.scope !== status.target.scope) throw new Error(`Current world scope mismatch: expected ${String(status.target.scope)}.`);
+        return this.acceptScopedDocument(state, status.processId, status.target.scope!, "world", parsed.text, parsed.consistencyReport);
       });
     });
   }
@@ -196,12 +160,11 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
-        await this.recoverAndSaveState(state);
-        const scope = settingScopeForPhase(state.phase);
-        if (!scope || state.flowStatus !== "needs_input" || (parsed.scope && parsed.scope !== scope)) {
-          throw new Error(`Current phase does not accept setting submission: phase=${state.phase}, status=${state.flowStatus}.`);
-        }
-        return this.acceptScopedDocument(state, scope, "setting", parsed.text, parsed.consistencyReport);
+        await this.reconcileAndSaveState(state);
+        const status = await this.requireAction(state, "submit_document");
+        if (status.target?.document !== "setting") throw new Error(`Current process does not accept setting submission: process=${status.processId}.`);
+        if (parsed.scope && parsed.scope !== status.target.scope) throw new Error(`Current setting scope mismatch: expected ${String(status.target.scope)}.`);
+        return this.acceptScopedDocument(state, status.processId, status.target.scope!, "setting", parsed.text, parsed.consistencyReport);
       });
     });
   }
@@ -217,24 +180,25 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
-        await this.recoverAndSaveState(state);
-        if (state.phase !== "volume_outline" || state.flowStatus !== "needs_input") {
-          throw new Error(`Current phase does not accept outline submission: phase=${state.phase}, status=${state.flowStatus}.`);
-        }
+        await this.reconcileAndSaveState(state);
+        await this.requireAction(state, "submit_outline");
         if (!parsed.consistencyReport.ok) {
-          state.lastConsistencyFailure = { phase: state.phase, submittedAt: new Date().toISOString(), report: parsed.consistencyReport };
+          state.lastConsistencyFailure = { processId: "volume.outline", submittedAt: new Date().toISOString(), report: parsed.consistencyReport };
           state.updatedAt = new Date().toISOString();
           await this.storage.saveState(state);
-          return nextResult(state, await this.contextForPhase(state));
+          return this.nextResult(state);
         }
-        state.chapters = outlineChapters(parsed.chapters);
-        state.currentChapterNo = 1;
-        state.currentBeatNo = 1;
-        state.lastConsistencyFailure = undefined;
-        setPhase(state, "volume_outline", "pending_finalization");
-        await this.storage.saveState(state);
+        const action = await this.stateManager.beginAction(state, { processId: "volume.outline", kind: "submit_outline", input: { text: parsed.text, chapters: parsed.chapters, report: parsed.consistencyReport } });
         await this.storage.writeOutline(state, parsed.text);
-        return nextResult(state, await this.contextForPhase(state));
+        await this.stateManager.markArtifactWritten(state, action.id, []);
+        await this.stateManager.commitState(state, action.id, () => {
+          state.chapters = outlineChapters(parsed.chapters);
+          state.currentChapterNo = 1;
+          state.currentBeatNo = 1;
+          state.lastConsistencyFailure = undefined;
+        });
+        await this.stateManager.clearAction(state, action.id);
+        return this.nextResult(state);
       });
     });
   }
@@ -245,14 +209,13 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parseLocatorInput(input));
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
-        await this.recoverAndSaveState(state);
-        if (state.phase !== "volume_outline" || state.flowStatus !== "pending_finalization") {
-          throw new Error(`Current phase does not accept outline finalization: phase=${state.phase}, status=${state.flowStatus}.`);
-        }
+        await this.reconcileAndSaveState(state);
+        await this.requireAction(state, "finalize_outline");
         if (state.chapters.length === 0) throw new Error("Outline finalization requires at least one chapter.");
-        setPhase(state, "writing", "needs_input");
-        await this.storage.saveState(state);
-        return nextResult(state, await this.contextForPhase(state));
+        const action = await this.stateManager.beginAction(state, { processId: "volume.outline", kind: "finalize_outline", input: {} });
+        await this.stateManager.commitState(state, action.id, () => completeProcess(state, "volume.outline"));
+        await this.stateManager.clearAction(state, action.id);
+        return this.nextResult(state);
       });
     });
   }
@@ -264,40 +227,38 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
-        await this.recoverAndSaveState(state);
-        if (state.phase !== "writing" || state.flowStatus !== "needs_input") {
-          throw new Error(`Current phase does not accept beat submission: phase=${state.phase}, status=${state.flowStatus}.`);
-        }
+        await this.reconcileAndSaveState(state);
+        const status = await this.requireAction(state, "submit_beat");
         const beat = findCurrentBeat(state);
-        if (!beat) {
-          setPhase(state, "epub", "ready");
-          await this.storage.saveState(state);
-          return nextResult(state, await this.contextForPhase(state));
-        }
+        if (!beat) throw new Error("No current beat is available for submission.");
         if ((parsed.chapterNo && parsed.chapterNo !== beat.chapterNo) || (parsed.beatNo && parsed.beatNo !== beat.beatNo)) {
           throw new Error(`Current beat mismatch: expected chapter=${beat.chapterNo}, beat=${beat.beatNo}.`);
         }
         if (!parsed.consistencyReport.ok) {
-          state.lastConsistencyFailure = { phase: state.phase, submittedAt: new Date().toISOString(), report: parsed.consistencyReport };
+          state.lastConsistencyFailure = { processId: status.processId, submittedAt: new Date().toISOString(), report: parsed.consistencyReport };
           state.updatedAt = new Date().toISOString();
           await this.storage.saveState(state);
-          return nextResult(state, await this.contextForPhase(state));
+          return this.nextResult(state);
         }
         const previous = cloneVolumeState(state);
         const previousBeatFile = await this.storage.readBeatFile(state, beat.chapterNo, beat.beatNo);
+        const action = await this.stateManager.beginAction(state, { processId: "volume.writing", kind: "submit_beat", target: { chapterNo: beat.chapterNo, beatNo: beat.beatNo }, input: { text: parsed.text, report: parsed.consistencyReport } });
         const beatPath = await this.storage.writeBeat(state, beat.chapterNo, beat.beatNo, parsed.text);
-        beat.status = "complete";
-        state.lastConsistencyFailure = undefined;
-        advanceCursor(state);
-        setPhase(state, findCurrentBeat(state) ? "writing" : "epub", findCurrentBeat(state) ? "needs_input" : "ready");
+        await this.stateManager.markArtifactWritten(state, action.id, [beatPath]);
         try {
-          await this.storage.saveState(state);
+          await this.stateManager.commitState(state, action.id, () => {
+            beat.status = "complete";
+            state.lastConsistencyFailure = undefined;
+            advanceCursor(state);
+            if (!findCurrentBeat(state)) completeProcess(state, "volume.writing");
+          });
+          await this.stateManager.clearAction(state, action.id);
         } catch (error) {
           if (previousBeatFile === undefined) await this.storage.deleteBeat(previous, beat.chapterNo, beat.beatNo);
           else await this.storage.writeBeatFile(previous, beat.chapterNo, beat.beatNo, previousBeatFile);
           throw error;
         }
-        return { status: state.flowStatus, message: "비트를 저장했고 파이프라인을 다음 단계로 이동했습니다.", data: { beatPath, next: summarizeState(state), context: await this.contextForPhase(state) } };
+        return { status: await this.resultStatus(state), message: "비트를 저장했고 파이프라인을 다음 단계로 이동했습니다.", data: { beatPath, next: await this.summarizeState(state), context: await this.contextForState(state) } };
       });
     });
   }
@@ -309,17 +270,19 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
-        await this.recoverAndSaveState(state);
-        if (state.phase !== "writing" || state.flowStatus !== "needs_input") {
-          throw new Error(`Current phase does not accept beat draft: phase=${state.phase}, status=${state.flowStatus}.`);
-        }
+        await this.reconcileAndSaveState(state);
+        await this.requireAction(state, "submit_beat");
         const beat = findCurrentBeat(state);
         if (!beat) throw new Error("No current beat is available for draft save.");
         if ((parsed.chapterNo && parsed.chapterNo !== beat.chapterNo) || (parsed.beatNo && parsed.beatNo !== beat.beatNo)) {
           throw new Error(`Current beat mismatch: expected chapter=${beat.chapterNo}, beat=${beat.beatNo}.`);
         }
+        const action = await this.stateManager.beginAction(state, { processId: "volume.writing", kind: "save_beat_draft", target: { chapterNo: beat.chapterNo, beatNo: beat.beatNo }, input: { text: parsed.text } });
         const draftPath = await this.storage.writeBeatDraft(state, beat.chapterNo, beat.beatNo, parsed.text);
-        return { status: state.flowStatus, message: "비트 초안을 저장했습니다.", data: { draftPath, next: summarizeState(state), context: await this.contextForPhase(state) } };
+        await this.stateManager.markArtifactWritten(state, action.id, [draftPath]);
+        await this.stateManager.commitState(state, action.id, () => undefined);
+        await this.stateManager.clearAction(state, action.id);
+        return { status: await this.resultStatus(state), message: "비트 초안을 저장했습니다.", data: { draftPath, next: await this.summarizeState(state), context: await this.contextForState(state) } };
       });
     });
   }
@@ -331,27 +294,34 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
-        await this.recoverAndSaveState(state);
-        if (!(state.phase === "writing" || state.phase === "epub" || state.phase === "complete")) {
-          throw new Error(`Current phase does not accept beat rewrite: phase=${state.phase}, status=${state.flowStatus}.`);
-        }
+        await this.reconcileAndSaveState(state);
         const beat = state.chapters.flatMap((chapter) => chapter.beats).find((item) => item.chapterNo === parsed.chapterNo && item.beatNo === parsed.beatNo);
         if (!beat) throw new Error(`Unknown beat: chapter=${parsed.chapterNo}, beat=${parsed.beatNo}.`);
         if (!parsed.consistencyReport.ok) {
-          state.lastConsistencyFailure = { phase: state.phase, submittedAt: new Date().toISOString(), report: parsed.consistencyReport };
+          state.lastConsistencyFailure = { processId: "volume.writing", submittedAt: new Date().toISOString(), report: parsed.consistencyReport };
           state.updatedAt = new Date().toISOString();
           await this.storage.saveState(state);
-          return nextResult(state, await this.contextForPhase(state));
+          return this.nextResult(state);
         }
+        const previous = cloneVolumeState(state);
+        const previousBeatFile = await this.storage.readBeatFile(state, parsed.chapterNo, parsed.beatNo);
+        const action = await this.stateManager.beginAction(state, { processId: "volume.writing", kind: "rewrite_beat", target: { chapterNo: parsed.chapterNo, beatNo: parsed.beatNo }, input: { text: parsed.text, report: parsed.consistencyReport } });
         const beatPath = await this.storage.writeBeat(state, parsed.chapterNo, parsed.beatNo, parsed.text);
-        beat.status = "complete";
-        state.lastConsistencyFailure = undefined;
-        if (state.phase === "complete") setPhase(state, "epub", "ready");
-        else if (state.phase === "epub") setPhase(state, "epub", "ready");
-        else setPhase(state, "writing", findCurrentBeat(state) ? "needs_input" : "ready");
-        if (state.phase === "writing" && state.flowStatus === "ready") setPhase(state, "epub", "ready");
-        await this.storage.saveState(state);
-        return { status: state.flowStatus, message: "비트를 다시 저장했습니다.", data: { beatPath, next: summarizeState(state), context: await this.contextForPhase(state) } };
+        await this.stateManager.markArtifactWritten(state, action.id, [beatPath]);
+        try {
+          await this.stateManager.commitState(state, action.id, () => {
+            beat.status = "complete";
+            state.lastConsistencyFailure = undefined;
+            removeCompletedProcesses(state, ["volume.epub", "volume.complete"]);
+            if (!findCurrentBeat(state)) completeProcess(state, "volume.writing");
+          });
+          await this.stateManager.clearAction(state, action.id);
+        } catch (error) {
+          if (previousBeatFile === undefined) await this.storage.deleteBeat(previous, parsed.chapterNo, parsed.beatNo);
+          else await this.storage.writeBeatFile(previous, parsed.chapterNo, parsed.beatNo, previousBeatFile);
+          throw error;
+        }
+        return { status: await this.resultStatus(state), message: "비트를 다시 저장했습니다.", data: { beatPath, next: await this.summarizeState(state), context: await this.contextForState(state) } };
       });
     });
   }
@@ -374,8 +344,8 @@ export class NovelPipeline {
   async status(input: Partial<LocatorInput> = {}): Promise<ToolResult> {
     return this.withRootRedaction(async () => {
       const state = await this.resolveState(parseLocatorInput(input));
-      await this.recoverStateFromArtifacts(state);
-      return { status: state.flowStatus, message: "현재 소설 파이프라인 상태입니다.", data: { ...summarizeState(state), context: await this.contextForPhase(state) } };
+      await this.reconcileState(state, { clearActiveAction: false });
+      return { status: await this.resultStatus(state), message: "현재 소설 파이프라인 상태입니다.", data: { ...await this.summarizeState(state), context: await this.contextForState(state) } };
     });
   }
 
@@ -386,40 +356,47 @@ export class NovelPipeline {
       return this.storage.withVolumeLock(parsed.franchiseId, parsed.workId, parsed.volumeId, async () => {
         deadline.assertActive("building epub");
         const state = await this.storage.loadState(parsed.franchiseId, parsed.workId, parsed.volumeId);
-        await this.recoverAndSaveState(state);
-        if (state.phase !== "epub" || state.flowStatus !== "ready") {
-          throw new Error("EPUB can only be built when phase=epub and status=ready.");
-        }
+        await this.reconcileAndSaveState(state);
+        await this.requireAction(state, "build_epub");
         const allComplete = state.chapters.every((chapter) => chapter.beats.every((beat) => beat.status === "complete"));
         if (!allComplete) throw new Error("EPUB can only be built after every beat is complete.");
+        const action = await this.stateManager.beginAction(state, { processId: "volume.epub", kind: "build_epub", input: parsed });
         const markdown = await this.storage.collectVolumeMarkdown(state);
         const archive = buildEpubArchive(state, markdown);
         const candidatePath = await this.storage.writeEpubCandidate(state, archive);
+        await this.stateManager.markArtifactWritten(state, action.id, [candidatePath]);
         const internal = validateEpubArchive(archive);
         if (!internal.valid) throw new Error(`Internal EPUB validation failed: ${internal.issues.join("; ")}`);
         const external = await runExternalEpubCheck(candidatePath, this.config, deadline.requireRemainingMs("running external epub validator"));
         if (!external.valid) throw new Error(`External EPUB validation failed: ${external.error ?? external.stderr ?? "unknown error"}`);
         const path = await this.storage.promoteEpubCandidate(state, candidatePath);
-        setPhase(state, "complete", "complete");
-        await this.storage.saveState(state);
+        await this.stateManager.commitState(state, action.id, () => {
+          completeProcess(state, "volume.epub");
+          completeProcess(state, "volume.complete");
+        });
+        await this.stateManager.clearAction(state, action.id);
         return { status: "ok", message: "EPUB file was built.", data: { path, bytes: archive.length, validation: { internal, external } } };
       });
     });
   }
 
-  private async acceptScopedDocument(state: VolumeState, scope: WorldScope | SettingScope, kind: "world" | "setting", text: string, report: ConsistencyReport): Promise<ToolResult> {
+  private async acceptScopedDocument(state: VolumeState, processId: ProcessId, scope: WorldScope | SettingScope, kind: "world" | "setting", text: string, report: ConsistencyReport): Promise<ToolResult> {
     if (!report.ok) {
-      state.lastConsistencyFailure = { phase: state.phase, submittedAt: new Date().toISOString(), report };
+      state.lastConsistencyFailure = { processId, submittedAt: new Date().toISOString(), report };
       state.updatedAt = new Date().toISOString();
       await this.storage.saveState(state);
-      return nextResult(state, await this.contextForPhase(state));
+      return this.nextResult(state);
     }
+    const action = await this.stateManager.beginAction(state, { processId, kind: "submit_document", target: { scope, document: kind }, input: { text, report } });
     if (kind === "world") await this.storage.writeScopedWorld(state, scope, text);
     else await this.storage.writeScopedSetting(state, scope, text);
-    state.lastConsistencyFailure = undefined;
-    setPhase(state, state.phase, "pending_finalization");
-    await this.storage.saveState(state);
-    return nextResult(state, await this.contextForPhase(state));
+    const artifactPath = kind === "world" ? this.storage.scopedWorldPath(state, scope) : this.storage.scopedSettingPath(state, scope);
+    await this.stateManager.markArtifactWritten(state, action.id, [artifactPath]);
+    await this.stateManager.commitState(state, action.id, () => {
+      state.lastConsistencyFailure = undefined;
+    });
+    await this.stateManager.clearAction(state, action.id);
+    return this.nextResult(state);
   }
 
   private async finalizeScopedDocument(input: LocatorInput, kind: "world" | "setting", signal?: ExecutionSignal): Promise<ToolResult> {
@@ -428,59 +405,35 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parseLocatorInput(input));
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
-        await this.recoverAndSaveState(state);
-        const scope = kind === "world" ? worldScopeForPhase(state.phase) : settingScopeForPhase(state.phase);
-        if (!scope || state.flowStatus !== "pending_finalization") {
-          throw new Error(`Current phase does not accept ${kind} finalization: phase=${state.phase}, status=${state.flowStatus}.`);
-        }
-        setPhase(state, nextPhase(state.phase), "needs_input");
-        await this.recoverStateFromArtifacts(state);
-        await this.storage.saveState(state);
-        return nextResult(state, await this.contextForPhase(state));
+        await this.reconcileAndSaveState(state);
+        const status = await this.requireAction(state, "finalize_document");
+        if (status.target?.document !== kind) throw new Error(`Current process does not accept ${kind} finalization: process=${status.processId}.`);
+        const action = await this.stateManager.beginAction(state, { processId: status.processId, kind: "finalize_document", target: status.target, input: { kind } });
+        await this.stateManager.commitState(state, action.id, () => completeProcess(state, status.processId));
+        await this.stateManager.clearAction(state, action.id);
+        return this.nextResult(state);
       });
     });
   }
 
-  private async recoverStateFromArtifacts(state: VolumeState): Promise<boolean> {
-    let changed = false;
-    if (state.phase === "writing") {
-      changed = await this.recoverWritingPhase(state) || changed;
-      if (findCurrentBeat(state)) setPhase(state, "writing", "needs_input");
-      else setPhase(state, "epub", "ready");
-      return changed;
-    }
-    if (state.phase === "epub" || state.phase === "complete") {
-      changed = await this.recoverFinalPhases(state) || changed;
-      return changed;
-    }
-    if (state.phase === "volume_outline") {
-      const exists = await this.storage.readOutlineFile(state);
-      if (exists && state.chapters.length > 0) {
-        setPhase(state, "volume_outline", "pending_finalization");
-      } else if (exists && state.chapters.length === 0) {
-        setPhase(state, "volume_outline", "needs_input");
-      } else {
-        setPhase(state, "volume_outline", "needs_input");
-      }
-      return changed;
-    }
-    const worldScope = worldScopeForPhase(state.phase);
-    const settingScope = settingScopeForPhase(state.phase);
-    const exists = worldScope
-      ? await this.storage.readScopedWorldFile(state, worldScope)
-      : settingScope
-        ? await this.storage.readScopedSettingFile(state, settingScope)
-        : undefined;
-    setPhase(state, state.phase, exists ? "pending_finalization" : "needs_input");
-    return changed;
-  }
-
-  private async recoverAndSaveState(state: VolumeState): Promise<void> {
-    await this.recoverStateFromArtifacts(state);
+  private async reconcileAndSaveState(state: VolumeState): Promise<void> {
+    await this.reconcileState(state, { clearActiveAction: true });
     await this.storage.saveState(state);
   }
 
-  private async recoverWritingPhase(state: VolumeState): Promise<boolean> {
+  private async reconcileState(state: VolumeState, options: { clearActiveAction: boolean }): Promise<void> {
+    await this.reconcileWritingArtifacts(state);
+    if (state.chapters.length > 0 && state.chapters.every((chapter) => chapter.beats.every((beat) => beat.status === "complete"))) {
+      completeProcess(state, "volume.writing");
+    }
+    if (await this.storage.epubFileExists(state)) {
+      completeProcess(state, "volume.epub");
+      completeProcess(state, "volume.complete");
+    }
+    if (options.clearActiveAction) recoverActiveAction(state);
+  }
+
+  private async reconcileWritingArtifacts(state: VolumeState): Promise<boolean> {
     let changed = false;
     for (const beat of state.chapters.flatMap((chapter) => chapter.beats)) {
       if (beat.status === "complete") continue;
@@ -508,44 +461,40 @@ export class NovelPipeline {
     return changed;
   }
 
-  private async recoverFinalPhases(state: VolumeState): Promise<boolean> {
-    let changed = false;
-    let allBeatsComplete = state.chapters.every((chapter) => chapter.beats.every((beat) => beat.status === "complete"));
-    if (!allBeatsComplete) {
-      await this.recoverWritingPhase(state);
-      const firstIncomplete = state.chapters.flatMap((chapter) => chapter.beats).find((beat) => beat.status !== "complete");
-      if (firstIncomplete) {
-        state.currentChapterNo = firstIncomplete.chapterNo;
-        state.currentBeatNo = firstIncomplete.beatNo;
-        setPhase(state, "writing", "needs_input");
-        changed = true;
-        return changed;
-      }
-      allBeatsComplete = state.chapters.every((chapter) => chapter.beats.every((beat) => beat.status === "complete"));
-    }
-    const epubExists = await this.storage.epubFileExists(state);
-    if (state.phase === "complete" && !epubExists) {
-      setPhase(state, "epub", "ready");
-      changed = true;
-    } else if (state.phase === "epub" && epubExists && allBeatsComplete) {
-      setPhase(state, "complete", "complete");
-      changed = true;
-    }
-    return changed;
-  }
-
-  private async contextForPhase(state: VolumeState): Promise<Record<string, unknown>> {
-    const base = summarizeState(state);
+  private async contextForState(state: VolumeState): Promise<Record<string, unknown>> {
+    const base = await this.summarizeState(state);
     const pipelineStatus = await this.orchestrator.inspect(state);
     const requiredAction = legacyRequiredAction(pipelineStatus);
     const statusContext = { ...base, processId: pipelineStatus.processId, requiredAction };
-    if (state.phase === "writing") {
+    if (pipelineStatus.requiredAction === "submit_beat") {
       const currentBeat = pipelineStatus.currentBeat ?? findCurrentBeat(state);
       return { ...statusContext, currentBeat, currentBeatDraft: currentBeat ? await this.storage.readBeatDraftFile(state, currentBeat.chapterNo, currentBeat.beatNo) : undefined, previousBeatText: await this.previousBeatText(state), references: await this.referenceDocuments(state) };
     }
-    if (state.phase === "volume_outline") return { ...statusContext, references: await this.referenceDocuments(state) };
-    if (state.phase === "epub" || state.phase === "complete") return statusContext;
+    if (pipelineStatus.requiredAction === "build_epub" || pipelineStatus.requiredAction === "none") return statusContext;
     return { ...statusContext, references: await this.referenceDocuments(state) };
+  }
+
+  private async nextResult(state: VolumeState): Promise<ToolResult> {
+    return { status: await this.resultStatus(state), message: "파이프라인의 현재 단계와 필요한 다음 작업입니다.", data: await this.contextForState(state) };
+  }
+
+  private async requireAction(state: VolumeState, action: PipelineStatus["requiredAction"]): Promise<PipelineStatus> {
+    const status = await this.orchestrator.inspect(state);
+    if (status.requiredAction !== action) throw new Error(`Current process requires ${status.requiredAction}, not ${action}.`);
+    return status;
+  }
+
+  private async resultStatus(state: VolumeState): Promise<ToolResult["status"]> {
+    const status = await this.orchestrator.inspect(state);
+    if (status.requiredAction === "none") return "complete";
+    if (status.requiredAction === "build_epub") return "ready";
+    if (status.requiredAction.startsWith("finalize")) return "pending_finalization";
+    return "needs_input";
+  }
+
+  private async summarizeState(state: VolumeState): Promise<Record<string, unknown>> {
+    const beats = state.chapters.flatMap((chapter) => chapter.beats);
+    return { franchiseId: state.franchiseId, workId: state.workId, volumeId: state.volumeId, completedProcesses: state.completedProcesses, currentChapterNo: state.currentChapterNo, currentBeatNo: state.currentBeatNo, completedBeats: beats.filter((beat) => beat.status === "complete").length, totalBeats: beats.length, ...(state.lastConsistencyFailure ? { lastConsistencyFailure: state.lastConsistencyFailure } : {}) };
   }
 
   private async referenceDocuments(state: VolumeState): Promise<Record<string, boolean>> {
@@ -694,16 +643,20 @@ function findCurrentBeat(state: VolumeState) { return state.chapters.flatMap((ch
 function previousBeat(state: VolumeState) { const beats = state.chapters.flatMap((chapter) => chapter.beats); const index = beats.findIndex((beat) => beat.chapterNo === state.currentChapterNo && beat.beatNo === state.currentBeatNo); return index > 0 ? beats[index - 1] : undefined; }
 function advanceCursor(state: VolumeState): void { const next = state.chapters.flatMap((chapter) => chapter.beats).find((beat) => beat.status !== "complete"); if (next) { state.currentChapterNo = next.chapterNo; state.currentBeatNo = next.beatNo; return; } const last = state.chapters.flatMap((chapter) => chapter.beats).at(-1); if (last) { state.currentChapterNo = last.chapterNo; state.currentBeatNo = last.beatNo; } }
 function cloneVolumeState(state: VolumeState): VolumeState { return validateVolumeState(state); }
-function setPhase(state: VolumeState, phase: PipelinePhase, flowStatus: VolumeState["flowStatus"]): void { state.phase = phase; state.flowStatus = flowStatus; state.updatedAt = new Date().toISOString(); }
-function nextPhase(phase: PipelinePhase): PipelinePhase { return PHASE_ORDER[Math.min(PHASE_ORDER.indexOf(phase) + 1, PHASE_ORDER.length - 1)] ?? "complete"; }
-function worldScopeForPhase(phase: PipelinePhase): WorldScope | undefined { if (phase === "franchise_world") return "franchise"; if (phase === "work_world") return "work"; if (phase === "volume_world") return "volume"; return undefined; }
-function settingScopeForPhase(phase: PipelinePhase): SettingScope | undefined { if (phase === "franchise_setting") return "franchise"; if (phase === "work_setting") return "work"; if (phase === "volume_setting") return "volume"; return undefined; }
+function completeProcess(state: VolumeState, processId: ProcessId): void {
+  const order: ProcessId[] = ["franchise.world", "franchise.setting", "work.world", "work.setting", "volume.world", "volume.setting", "volume.outline", "volume.writing", "volume.epub", "volume.complete"];
+  const index = order.indexOf(processId);
+  if (index < 0) throw new Error(`Unknown pipeline process: ${processId}.`);
+  state.completedProcesses = order.slice(0, Math.max(state.completedProcesses.length, index + 1));
+  state.updatedAt = new Date().toISOString();
+}
+function removeCompletedProcesses(state: VolumeState, processIds: ProcessId[]): void { state.completedProcesses = state.completedProcesses.filter((processId) => !processIds.includes(processId)); state.updatedAt = new Date().toISOString(); }
+function recoverActiveAction(state: VolumeState): void { if (!state.activeAction) return; state.activeAction = undefined; state.updatedAt = new Date().toISOString(); }
 function legacyRequiredAction(status: PipelineStatus): string {
   if (status.requiredAction === "submit_document") return `submit_${status.target?.document ?? "document"}`;
   if (status.requiredAction === "finalize_document") return `finalize_${status.target?.document ?? "document"}`;
   return status.requiredAction;
 }
-function nextResult(state: VolumeState, context: Record<string, unknown>): ToolResult { return { status: state.flowStatus, message: "파이프라인의 현재 단계와 필요한 다음 작업입니다.", data: context }; }
-function summarizeState(state: VolumeState) { const beats = state.chapters.flatMap((chapter) => chapter.beats); return { franchiseId: state.franchiseId, workId: state.workId, volumeId: state.volumeId, phase: state.phase, flowStatus: state.flowStatus, currentChapterNo: state.currentChapterNo, currentBeatNo: state.currentBeatNo, completedBeats: beats.filter((beat) => beat.status === "complete").length, totalBeats: beats.length, ...(state.lastConsistencyFailure ? { lastConsistencyFailure: state.lastConsistencyFailure } : {}) }; }
+function newVolumeState(input: { franchiseId: string; franchiseName: string; workId: string; workTitle: string; volumeId: string; volumeTitle: string; completedProcesses: ProcessId[] }): VolumeState { const now = new Date().toISOString(); return validateVolumeState({ schemaVersion: CURRENT_STATE_SCHEMA_VERSION, ...input, currentChapterNo: 1, currentBeatNo: 1, chapters: [], createdAt: now, updatedAt: now }); }
 function errorMessage(error: unknown, root?: string): string { const secretRedacted = redactErrorMessage(error).replace(PIPELINE_ERROR_CONTROL_CHARS_GLOBAL, " "); const redacted = root ? secretRedacted.split(root).join("<data-root>") : secretRedacted; return truncatePipelineText(redacted, MAX_SUMMARY_TEXT_CHARS, MAX_SUMMARY_TEXT_BYTES); }
 function truncatePipelineText(value: string, maxChars: number, maxBytes: number): string { if (value.length <= maxChars && utf8ByteLengthUpTo(value, maxBytes) <= maxBytes) return value; return `${value.slice(0, maxChars)}... [truncated]`; }

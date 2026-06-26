@@ -1,6 +1,6 @@
 import { CURRENT_STATE_SCHEMA_VERSION } from "./constants.js";
-import type { ActiveAction } from "./pipeline/model.js";
-import type { BeatState, ChapterState, ConsistencyReport, PipelineFlowStatus, PipelinePhase, VolumeState } from "./types.js";
+import type { ActiveAction, ProcessId } from "./pipeline/model.js";
+import type { BeatState, ChapterState, ConsistencyReport, PipelinePhase, VolumeState } from "./types.js";
 import { assertSafeId, ValidationError } from "./validation.js";
 import { utf8ByteLengthUpTo } from "./utf8.js";
 import {
@@ -20,7 +20,7 @@ import {
 } from "./constants.js";
 
 const PHASES: PipelinePhase[] = ["franchise_world", "franchise_setting", "work_world", "work_setting", "volume_world", "volume_setting", "volume_outline", "writing", "epub", "complete"];
-const FLOW_STATUSES: PipelineFlowStatus[] = ["needs_input", "pending_finalization", "ready", "complete"];
+const FLOW_STATUSES = ["needs_input", "pending_finalization", "ready", "complete"] as const;
 const BEAT_STATUSES: BeatState["status"][] = ["pending", "complete"];
 const PROCESS_IDS = ["franchise.world", "franchise.setting", "work.world", "work.setting", "volume.world", "volume.setting", "volume.outline", "volume.writing", "volume.epub", "volume.complete"] as const;
 const ACTION_KINDS = ["submit_document", "finalize_document", "submit_outline", "finalize_outline", "submit_beat", "save_beat_draft", "rewrite_beat", "build_epub"] as const;
@@ -30,9 +30,11 @@ const OBJECT_KEY_CONTROL_CHARS = /[\u0000-\u001f\u007f]/u;
 
 export function validateVolumeState(value: unknown): VolumeState {
   const state = assertRecord(value, "VolumeState");
+  const schemaVersion = state.schemaVersion;
+  if (schemaVersion === 1) return migrateV1State(state);
   assertKnownFields(state, "VolumeState", [
     "schemaVersion", "franchiseId", "franchiseName", "workId", "workTitle", "volumeId", "volumeTitle",
-    "phase", "flowStatus", "activeAction", "lastConsistencyFailure", "currentChapterNo", "currentBeatNo", "chapters", "createdAt", "updatedAt"
+    "completedProcesses", "activeAction", "lastConsistencyFailure", "currentChapterNo", "currentBeatNo", "chapters", "createdAt", "updatedAt"
   ]);
   const chapters = boundedArrayField(state.chapters, "VolumeState.chapters", MAX_CHAPTERS).map(validateChapter);
   assertUnique(chapters.map((chapter) => chapter.chapterNo), "ChapterState.chapterNo");
@@ -50,8 +52,7 @@ export function validateVolumeState(value: unknown): VolumeState {
     workTitle: boundedSingleLineStringField(state.workTitle, "VolumeState.workTitle", MAX_TITLE_CHARS, MAX_TITLE_BYTES),
     volumeId: assertSafeId(state.volumeId, "VolumeState.volumeId"),
     volumeTitle: boundedSingleLineStringField(state.volumeTitle, "VolumeState.volumeTitle", MAX_TITLE_CHARS, MAX_TITLE_BYTES),
-    phase: oneOf(state.phase, PHASES, "VolumeState.phase"),
-    flowStatus: oneOf(state.flowStatus, FLOW_STATUSES, "VolumeState.flowStatus"),
+    completedProcesses: validateCompletedProcesses(state.completedProcesses),
     ...(state.activeAction === undefined ? {} : { activeAction: validateActiveAction(state.activeAction) }),
     ...(state.lastConsistencyFailure === undefined ? {} : { lastConsistencyFailure: validateLastConsistencyFailure(state.lastConsistencyFailure) }),
     currentChapterNo: positiveInteger(state.currentChapterNo, "VolumeState.currentChapterNo"),
@@ -60,19 +61,33 @@ export function validateVolumeState(value: unknown): VolumeState {
     createdAt,
     updatedAt
   };
-  if (requiresChapters(volumeState.phase) && volumeState.chapters.length === 0) throw new ValidationError("VolumeState writing and final phases require chapters.");
   if (volumeState.chapters.length > 0) {
     const cursorBeat = volumeState.chapters.flatMap((chapter) => chapter.beats).find((beat) => beat.chapterNo === volumeState.currentChapterNo && beat.beatNo === volumeState.currentBeatNo);
     if (!cursorBeat) throw new ValidationError("VolumeState cursor does not point to a known beat.");
-    validateCursorPosition(volumeState);
     validatePendingBeatOrder(volumeState);
   }
-  if (volumeState.phase === "complete" && volumeState.flowStatus !== "complete") throw new ValidationError("VolumeState complete phase requires complete flowStatus.");
-  if (volumeState.flowStatus === "complete" && volumeState.phase !== "complete") throw new ValidationError("VolumeState complete flowStatus requires complete phase.");
-  if (volumeState.phase === "complete" && volumeState.chapters.some((chapter) => chapter.beats.some((beat) => beat.status !== "complete"))) {
-    throw new ValidationError("VolumeState complete phase requires every beat to be complete.");
-  }
   return volumeState;
+}
+
+function migrateV1State(state: Record<string, unknown>): VolumeState {
+  assertKnownFields(state, "VolumeState", [
+    "schemaVersion", "franchiseId", "franchiseName", "workId", "workTitle", "volumeId", "volumeTitle",
+    "phase", "flowStatus", "activeAction", "lastConsistencyFailure", "currentChapterNo", "currentBeatNo", "chapters", "createdAt", "updatedAt"
+  ]);
+  const phase = oneOf(state.phase, PHASES, "VolumeState.phase");
+  const flowStatus = oneOf(state.flowStatus, FLOW_STATUSES, "VolumeState.flowStatus");
+  const migrated: Record<string, unknown> = {
+    ...state,
+    schemaVersion: CURRENT_STATE_SCHEMA_VERSION,
+    completedProcesses: completedProcessesForV1(phase, flowStatus)
+  };
+  delete migrated.phase;
+  delete migrated.flowStatus;
+  if (state.lastConsistencyFailure !== undefined) {
+    const failure = assertRecord(state.lastConsistencyFailure, "LastConsistencyFailure");
+    migrated.lastConsistencyFailure = { processId: processIdForPhase(oneOf(failure.phase, PHASES, "LastConsistencyFailure.phase")), submittedAt: failure.submittedAt, report: failure.report };
+  }
+  return validateVolumeState(migrated);
 }
 
 function validateActiveAction(value: unknown): ActiveAction {
@@ -102,20 +117,13 @@ function validateActionTarget(value: unknown): ActiveAction["target"] {
   };
 }
 
-function requiresChapters(phase: PipelinePhase): boolean {
-  return phase === "writing" || phase === "epub" || phase === "complete";
-}
-
-function validateCursorPosition(state: VolumeState): void {
-  const beats = state.chapters.flatMap((chapter) => chapter.beats);
-  if (state.phase === "complete" || state.phase === "epub") {
-    const finalBeat = beats[beats.length - 1];
-    if (finalBeat && (finalBeat.chapterNo !== state.currentChapterNo || finalBeat.beatNo !== state.currentBeatNo)) throw new ValidationError("VolumeState final phases must point cursor to the final beat.");
-    return;
-  }
-  const firstIncompleteBeat = beats.find((beat) => beat.status !== "complete");
-  if (!firstIncompleteBeat) return;
-  if (firstIncompleteBeat.chapterNo !== state.currentChapterNo || firstIncompleteBeat.beatNo !== state.currentBeatNo) throw new ValidationError("VolumeState cursor must point to the first incomplete beat.");
+function validateCompletedProcesses(value: unknown): ProcessId[] {
+  const processes = boundedArrayField(value, "VolumeState.completedProcesses", PROCESS_IDS.length).map((item) => oneOf(item, PROCESS_IDS, "VolumeState.completedProcesses[]"));
+  assertUnique(processes, "VolumeState.completedProcesses");
+  processes.forEach((process, index) => {
+    if (process !== PROCESS_IDS[index]) throw new ValidationError("VolumeState.completedProcesses must be a contiguous prefix of the pipeline process order.");
+  });
+  return processes;
 }
 
 function validatePendingBeatOrder(state: VolumeState): void {
@@ -128,8 +136,32 @@ function validatePendingBeatOrder(state: VolumeState): void {
 
 function validateLastConsistencyFailure(value: unknown): VolumeState["lastConsistencyFailure"] {
   const record = assertRecord(value, "LastConsistencyFailure");
-  assertKnownFields(record, "LastConsistencyFailure", ["phase", "submittedAt", "report"]);
-  return { phase: oneOf(record.phase, PHASES, "LastConsistencyFailure.phase"), submittedAt: timestampField(record.submittedAt, "LastConsistencyFailure.submittedAt"), report: validateConsistencyReport(record.report) };
+  assertKnownFields(record, "LastConsistencyFailure", ["processId", "submittedAt", "report"]);
+  return { processId: oneOf(record.processId, PROCESS_IDS, "LastConsistencyFailure.processId"), submittedAt: timestampField(record.submittedAt, "LastConsistencyFailure.submittedAt"), report: validateConsistencyReport(record.report) };
+}
+
+function completedProcessesForV1(phase: PipelinePhase, flowStatus: typeof FLOW_STATUSES[number]): ProcessId[] {
+  const process = processIdForPhase(phase);
+  const order = [...PROCESS_IDS];
+  const index = order.indexOf(process);
+  const completed = index < 0 ? [] : order.slice(0, index);
+  if (phase === "complete" && flowStatus === "complete") {
+    return [...PROCESS_IDS];
+  }
+  return completed;
+}
+
+function processIdForPhase(phase: PipelinePhase): ProcessId {
+  if (phase === "franchise_world") return "franchise.world";
+  if (phase === "franchise_setting") return "franchise.setting";
+  if (phase === "work_world") return "work.world";
+  if (phase === "work_setting") return "work.setting";
+  if (phase === "volume_world") return "volume.world";
+  if (phase === "volume_setting") return "volume.setting";
+  if (phase === "volume_outline") return "volume.outline";
+  if (phase === "writing") return "volume.writing";
+  if (phase === "epub") return "volume.epub";
+  return "volume.complete";
 }
 
 function validateConsistencyReport(value: unknown): ConsistencyReport {
@@ -189,7 +221,7 @@ function assertKnownFields(value: Record<string, unknown>, label: string, allowe
 
 function boundedArrayField(value: unknown, label: string, max: number): unknown[] { if (!Array.isArray(value)) throw new ValidationError(`${label} must be an array.`); if (value.length > max) throw new ValidationError(`${label} must contain at most ${max} items.`); return value; }
 function boundedNonEmptyArrayField(value: unknown, label: string, max: number): unknown[] { const array = boundedArrayField(value, label, max); if (array.length === 0) throw new ValidationError(`${label} must contain at least one item.`); return array; }
-function schemaVersionField(value: unknown, label: string): 1 { if (value !== CURRENT_STATE_SCHEMA_VERSION) throw new ValidationError(`${label} must be ${CURRENT_STATE_SCHEMA_VERSION}.`); return CURRENT_STATE_SCHEMA_VERSION; }
+function schemaVersionField(value: unknown, label: string): 2 { if (value !== CURRENT_STATE_SCHEMA_VERSION) throw new ValidationError(`${label} must be ${CURRENT_STATE_SCHEMA_VERSION}.`); return CURRENT_STATE_SCHEMA_VERSION; }
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], label: string): T { if (typeof value !== "string" || !allowed.includes(value as T)) throw new ValidationError(`${label} is invalid.`); return value as T; }
 function positiveInteger(value: unknown, label: string): number { if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) throw new ValidationError(`${label} must be a positive integer.`); return value; }
 function boundedPositiveInteger(value: unknown, label: string, max: number): number { const number = positiveInteger(value, label); if (number > max) throw new ValidationError(`${label} must be less than or equal to ${max}.`); return number; }

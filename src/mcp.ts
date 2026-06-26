@@ -354,7 +354,7 @@ const tools = [
   },
   {
     name: "novel_next",
-    description: "Return the current fixed pipeline phase and required next action.",
+    description: "Return the current pipeline process and required next action.",
     inputSchema: locatorInputSchema
   },
   {

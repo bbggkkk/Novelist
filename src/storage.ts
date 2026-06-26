@@ -497,9 +497,6 @@ export class NovelStorage {
 
   async collectVolumeMarkdown(state: VolumeState): Promise<string> {
     const validated = validateVolumeState(state);
-    if (validated.phase !== "epub") {
-      throw new Error("Volume markdown can only be collected during the EPUB phase.");
-    }
     const parts: string[] = [];
     let collectedLength = 0;
     let collectedBytes = 0;
@@ -534,10 +531,6 @@ export class NovelStorage {
   }
 
   async writeEpub(state: VolumeState, content: Uint8Array): Promise<string> {
-    const object = this.volumeData(state);
-    if (object.phase !== "complete") {
-      throw new Error("EPUB can only be written for a complete volume.");
-    }
     const validated = validateVolumeState(state);
     const validation = validateEpubArchive(content);
     if (!validation.valid) {
@@ -567,10 +560,6 @@ export class NovelStorage {
   }
 
   async writeEpubCandidate(state: VolumeState, content: Uint8Array): Promise<string> {
-    const object = this.volumeData(state);
-    if (object.phase !== "epub") {
-      throw new Error("EPUB candidate can only be written during the EPUB phase.");
-    }
     const validated = validateVolumeState(state);
     const { franchiseId, workId, volumeId } = this.volumeIdentity(validated);
     const validation = validateEpubArchive(content);
@@ -583,7 +572,6 @@ export class NovelStorage {
   }
 
   async promoteEpubCandidate(state: VolumeState, candidatePath: string): Promise<string> {
-    const object = this.volumeData(state);
     this.assertInsideRoot(candidatePath);
     await this.assertRealPathInsideRoot(candidatePath, "EPUB candidate");
     const candidateStats = await lstat(candidatePath);
@@ -597,9 +585,6 @@ export class NovelStorage {
       throw new Error(`EPUB candidate archive is too large: ${candidateStats.size} bytes, maximum is ${MAX_EPUB_ARCHIVE_BYTES} bytes.`);
     }
     this.assertEpubCandidateForVolume(state, candidatePath);
-    if (object.phase !== "epub") {
-      throw new Error("EPUB candidate can only be promoted during the EPUB phase.");
-    }
     const validated = validateVolumeState(state);
     const validation = validateEpubArchive(await this.readBoundedBytes(candidatePath, MAX_EPUB_ARCHIVE_BYTES, "EPUB candidate archive"));
     if (!validation.valid) {

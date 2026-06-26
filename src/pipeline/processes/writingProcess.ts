@@ -9,7 +9,7 @@ export function createWritingProcess(): PipelineProcess {
   return {
     id: "volume.writing",
     async inspect(state: VolumeState): Promise<ProcessInspection> {
-      if (state.phase !== "writing") return { status: "complete", processId: "volume.writing" };
+      if (state.completedProcesses.includes("volume.writing")) return { status: "complete", processId: "volume.writing" };
       const beat = currentBeat(state);
       if (!beat) return { status: "complete", processId: "volume.writing" };
       return {

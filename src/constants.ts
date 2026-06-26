@@ -9,7 +9,7 @@ import { join, resolve } from "node:path";
 
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
 export const JSON_RPC_VERSION = "2.0";
-export const CURRENT_STATE_SCHEMA_VERSION = 1;
+export const CURRENT_STATE_SCHEMA_VERSION = 2;
 export const HEALTH_STORAGE_ROOT_HASH = "project-.novelist";
 export const HEALTH_AGENT_PROVIDER = "mcp-caller";
 export const STARTUP_FAILED_EVENT = "novelist_startup_failed";

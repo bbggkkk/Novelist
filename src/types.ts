@@ -1,4 +1,4 @@
-import type { ActiveAction } from "./pipeline/model.js";
+import type { ActiveAction, ProcessId } from "./pipeline/model.js";
 
 export type PipelinePhase =
   | "franchise_world"
@@ -29,7 +29,7 @@ export interface ConsistencyReport {
 }
 
 export interface LastConsistencyFailure {
-  phase: PipelinePhase;
+  processId: ProcessId;
   submittedAt: string;
   report: ConsistencyReport;
 }
@@ -83,15 +83,14 @@ export interface ChapterState {
 }
 
 export interface VolumeState {
-  schemaVersion: 1;
+  schemaVersion: 2;
   franchiseId: string;
   franchiseName: string;
   workId: string;
   workTitle: string;
   volumeId: string;
   volumeTitle: string;
-  phase: PipelinePhase;
-  flowStatus: PipelineFlowStatus;
+  completedProcesses: ProcessId[];
   activeAction?: ActiveAction;
   lastConsistencyFailure?: LastConsistencyFailure;
   currentChapterNo: number;

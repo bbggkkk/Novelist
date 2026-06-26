@@ -6,7 +6,7 @@ export function createOutlineProcess(artifacts: ArtifactRegistry): PipelineProce
   return {
     id: "volume.outline",
     async inspect(state: VolumeState): Promise<ProcessInspection> {
-      if (state.phase !== "volume_outline") return { status: "complete", processId: "volume.outline" };
+      if (state.completedProcesses.includes("volume.outline")) return { status: "complete", processId: "volume.outline" };
       const exists = await artifacts.outlineExists(state);
       return {
         status: "needs_action",

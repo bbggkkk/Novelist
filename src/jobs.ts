@@ -14,6 +14,17 @@ import {
 } from "./validation.js";
 import { validateToolResultShape } from "./toolResultValidation.js";
 import { redactErrorMessage, redactInlineSecrets } from "./redaction.js";
+import {
+  MAX_CONCURRENT_JOBS,
+  MAX_INSTRUCTION_INPUT_CHARS,
+  MAX_JOB_RETENTION_MS,
+  MAX_OPTION_INPUT_CHARS,
+  MAX_SET_TIMEOUT_MS,
+  MAX_TITLE_INPUT_CHARS,
+  MAX_TOTAL_JOBS
+} from "./constants.js";
+import { safeGetOwnPropertyDescriptor, safeGetPrototypeOf, safeOwnKeys } from "./safeProto.js";
+import { utf8ByteLength, utf8ByteLengthUpTo, utf8PrefixLength } from "./utf8.js";
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 export type AsyncToolName =
@@ -86,18 +97,11 @@ const MAX_JOB_RESULT_JSON_BYTES = 256 * 1024;
 const DEFAULT_JOB_LIST_LIMIT = 100;
 const MAX_JOB_LIST_LIMIT = 1000;
 const MAX_JOB_LIST_OFFSET = 100000;
-const MAX_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_CONCURRENT_JOBS = 64;
-const MAX_TOTAL_JOBS = 100000;
 const MAX_JOB_SHUTDOWN_WAIT_MS = 60_000;
-const MAX_SET_TIMEOUT_MS = 2_147_483_647;
 const MAX_JOB_STORAGE_ROOT_CHARS = 4096;
 const MAX_JOB_STORAGE_ROOT_BYTES = 4096;
-const MAX_TITLE_INPUT_CHARS = 512;
 const MAX_TITLE_INPUT_BYTES = 512;
-const MAX_OPTION_INPUT_CHARS = 256;
 const MAX_OPTION_INPUT_BYTES = 256;
-const MAX_INSTRUCTION_INPUT_CHARS = 16 * 1024;
 const MAX_INSTRUCTION_INPUT_BYTES = 16 * 1024;
 const MAX_CLEANUP_FAILURE_ITEMS = 20;
 const MAX_JOB_LOAD_ERROR_ITEMS = 20;
@@ -106,7 +110,6 @@ const CANCEL_PERSISTENCE_WAIT_MS = 250;
 const MAX_TIMESTAMP_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000;
 const JOB_ERROR_CONTROL_CHARS = /[\u0000-\u001f\u007f]/u;
 const JOB_ERROR_CONTROL_CHARS_GLOBAL = /[\u0000-\u001f\u007f]/gu;
-const encoder = new TextEncoder();
 
 export class JobManager {
   private readonly jobs = new Map<string, JobRecord>();
@@ -647,30 +650,6 @@ async function listPersistedJobIds(storage: NovelStorage): Promise<string[]> {
     ids.push(jobId);
   }
   return ids;
-}
-
-function safeGetPrototypeOf(value: object, label: string): object | null {
-  try {
-    return Object.getPrototypeOf(value);
-  } catch {
-    throw new Error(`${label} prototype must be readable.`);
-  }
-}
-
-function safeOwnKeys(value: object, label: string): Array<string | symbol> {
-  try {
-    return Reflect.ownKeys(value);
-  } catch {
-    throw new Error(`${label} keys must be readable.`);
-  }
-}
-
-function safeGetOwnPropertyDescriptor(value: object, key: PropertyKey, label: string): PropertyDescriptor | undefined {
-  try {
-    return Object.getOwnPropertyDescriptor(value, key);
-  } catch {
-    throw new Error(`${label} property descriptors must be readable.`);
-  }
 }
 
 function parseJobListInput(input: unknown): { status?: JobStatus; limit: number; offset: number } {
@@ -1429,70 +1408,6 @@ function truncateErrorMessageByBytes(message: string): string {
     return marker;
   }
   return `${message.slice(0, utf8PrefixLength(message, MAX_JOB_ERROR_BYTES - markerBytes))}${marker}`;
-}
-
-function utf8ByteLength(value: string): number {
-  return encoder.encode(value).length;
-}
-
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        index += 1;
-      }
-    }
-    bytes += utf8ScalarByteLength(scalar);
-    if (bytes > maxBytes) {
-      return bytes;
-    }
-  }
-  return bytes;
-}
-
-function utf8PrefixLength(value: string, maxBytes: number): number {
-  let chars = 0;
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    let charLength = 1;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        charLength = 2;
-      }
-    }
-    const nextBytes = bytes + utf8ScalarByteLength(scalar);
-    if (nextBytes > maxBytes) {
-      break;
-    }
-    chars += charLength;
-    bytes = nextBytes;
-    if (charLength === 2) {
-      index += 1;
-    }
-  }
-  return chars;
-}
-
-function utf8ScalarByteLength(scalar: number): number {
-  if (scalar <= 0x7f) {
-    return 1;
-  }
-  if (scalar <= 0x7ff) {
-    return 2;
-  }
-  if (scalar <= 0xffff) {
-    return 3;
-  }
-  return 4;
 }
 
 function jobToolResult(result: ToolResult): ToolResult {

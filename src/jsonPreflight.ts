@@ -1,3 +1,5 @@
+import { utf8ByteLengthUpTo } from "./utf8.js";
+
 const MAX_JSON_PREFLIGHT_LABEL_CHARS = 256;
 const MAX_JSON_PREFLIGHT_LABEL_BYTES = 512;
 const MAX_JSON_PREFLIGHT_TEXT_CHARS = 16 * 1024 * 1024;
@@ -169,39 +171,6 @@ function validateJsonPreflightLabel(value: unknown): string {
     throw new Error("JSON preflight label must not contain control characters.");
   }
   return value.trim();
-}
-
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        index += 1;
-      }
-    }
-    bytes += utf8ScalarByteLength(scalar);
-    if (bytes > maxBytes) {
-      return bytes;
-    }
-  }
-  return bytes;
-}
-
-function utf8ScalarByteLength(scalar: number): number {
-  if (scalar <= 0x7f) {
-    return 1;
-  }
-  if (scalar <= 0x7ff) {
-    return 2;
-  }
-  if (scalar <= 0xffff) {
-    return 3;
-  }
-  return 4;
 }
 
 function validateJsonPreflightMaxDepth(value: unknown): number {

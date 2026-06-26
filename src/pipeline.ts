@@ -26,21 +26,25 @@ import type {
   WorldScope,
   SettingScope
 } from "./types.js";
-import { CURRENT_STATE_SCHEMA_VERSION, HEALTH_AGENT_PROVIDER, HEALTH_STORAGE_ROOT_HASH } from "./constants.js";
+import {
+  CURRENT_STATE_SCHEMA_VERSION,
+  HEALTH_AGENT_PROVIDER,
+  HEALTH_STORAGE_ROOT_HASH,
+  MAX_INSTRUCTION_INPUT_CHARS,
+  MAX_OPTION_INPUT_CHARS,
+  MAX_TITLE_INPUT_CHARS
+} from "./constants.js";
 import { validateVolumeState } from "./stateValidation.js";
+import { utf8ByteLengthUpTo } from "./utf8.js";
 
-const MAX_TITLE_INPUT_CHARS = 512;
 const MAX_TITLE_INPUT_BYTES = 512;
-const MAX_OPTION_INPUT_CHARS = 256;
 const MAX_OPTION_INPUT_BYTES = 256;
-const MAX_INSTRUCTION_INPUT_CHARS = 16 * 1024;
 const MAX_INSTRUCTION_INPUT_BYTES = 16 * 1024;
 const MAX_DOCUMENT_CHARS = 1024 * 1024;
 const MAX_DOCUMENT_BYTES = 1024 * 1024;
 const MAX_SUMMARY_TEXT_CHARS = 1000;
 const MAX_SUMMARY_TEXT_BYTES = 4000;
 const PIPELINE_ERROR_CONTROL_CHARS_GLOBAL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu;
-const encoder = new TextEncoder();
 
 type LocatorInput = { franchiseId?: string; workId?: string; volumeId?: string; current?: boolean };
 type SubmitWorldInput = { franchiseId?: string; workId?: string; volumeId?: string; current?: boolean; scope?: WorldScope; text: string; consistencyReport: ConsistencyReport };
@@ -607,4 +611,3 @@ function nextResult(state: VolumeState, context: Record<string, unknown>): ToolR
 function summarizeState(state: VolumeState) { const beats = state.chapters.flatMap((chapter) => chapter.beats); return { franchiseId: state.franchiseId, workId: state.workId, volumeId: state.volumeId, phase: state.phase, flowStatus: state.flowStatus, currentChapterNo: state.currentChapterNo, currentBeatNo: state.currentBeatNo, completedBeats: beats.filter((beat) => beat.status === "complete").length, totalBeats: beats.length, ...(state.lastConsistencyFailure ? { lastConsistencyFailure: state.lastConsistencyFailure } : {}) }; }
 function errorMessage(error: unknown, root?: string): string { const secretRedacted = redactErrorMessage(error).replace(PIPELINE_ERROR_CONTROL_CHARS_GLOBAL, " "); const redacted = root ? secretRedacted.split(root).join("<data-root>") : secretRedacted; return truncatePipelineText(redacted, MAX_SUMMARY_TEXT_CHARS, MAX_SUMMARY_TEXT_BYTES); }
 function truncatePipelineText(value: string, maxChars: number, maxBytes: number): string { if (value.length <= maxChars && utf8ByteLengthUpTo(value, maxBytes) <= maxBytes) return value; return `${value.slice(0, maxChars)}... [truncated]`; }
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number { const bytes = encoder.encode(value.slice(0, maxBytes)).length; return bytes > maxBytes ? bytes : encoder.encode(value).length; }

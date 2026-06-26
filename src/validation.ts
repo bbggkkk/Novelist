@@ -1,6 +1,9 @@
+import { MAX_SAFE_ID_BYTES } from "./constants.js";
+import { safeGetOwnPropertyDescriptor, safeGetPrototypeOf, safeOwnKeys } from "./safeProto.js";
+import { utf8ByteLengthUpTo } from "./utf8.js";
+
 export type ObjectShape = Record<string, "string" | "boolean" | "optionalString" | "optionalBoolean">;
 
-const MAX_SAFE_ID_BYTES = 120;
 const MAX_VALIDATION_LABEL_CHARS = 256;
 const MAX_VALIDATION_LABEL_BYTES = 512;
 const MAX_VALIDATION_BOUND_CHARS = 1024 * 1024;
@@ -23,13 +26,13 @@ export function assertObject(value: unknown, label: string): Record<string, unkn
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new ValidationError(`${safeLabel} must be an object.`);
   }
-  const prototype = safeGetPrototypeOf(value, safeLabel);
+  const prototype = safeGetPrototypeOf(value, safeLabel, validationError);
   if (prototype !== Object.prototype && prototype !== null) {
     throw new ValidationError(`${safeLabel} must be a plain object.`);
   }
   const output = Object.create(null) as Record<string, unknown>;
   let fieldCount = 0;
-  for (const key of safeOwnKeys(value, safeLabel)) {
+  for (const key of safeOwnKeys(value, safeLabel, validationError)) {
     if (typeof key !== "string") {
       throw new ValidationError(`${safeLabel} must not contain symbol properties.`);
     }
@@ -46,7 +49,7 @@ export function assertObject(value: unknown, label: string): Record<string, unkn
     if (VALIDATION_LABEL_CONTROL_CHARS.test(key)) {
       throw new ValidationError(`${safeLabel} field names must not contain control characters.`);
     }
-    const descriptor = safeGetOwnPropertyDescriptor(value, key, safeLabel);
+    const descriptor = safeGetOwnPropertyDescriptor(value, key, safeLabel, validationError);
     if (!descriptor?.enumerable || !("value" in descriptor)) {
       throw new ValidationError(`${safeLabel} must not contain non-enumerable or accessor properties.`);
     }
@@ -60,30 +63,7 @@ export function assertObject(value: unknown, label: string): Record<string, unkn
   return output;
 }
 
-function safeGetPrototypeOf(value: object, label: string): object | null {
-  try {
-    return Object.getPrototypeOf(value);
-  } catch {
-    throw new ValidationError(`${label} prototype must be readable.`);
-  }
-}
-
-function safeOwnKeys(value: object, label: string): Array<string | symbol> {
-  try {
-    return Reflect.ownKeys(value);
-  } catch {
-    throw new ValidationError(`${label} keys must be readable.`);
-  }
-}
-
-function safeGetOwnPropertyDescriptor(value: object, key: string, label: string): PropertyDescriptor | undefined;
-function safeGetOwnPropertyDescriptor(value: object, key: string | symbol, label: string): PropertyDescriptor | undefined {
-  try {
-    return Object.getOwnPropertyDescriptor(value, key);
-  } catch {
-    throw new ValidationError(`${label} property descriptors must be readable.`);
-  }
-}
+const validationError = (message: string): ValidationError => new ValidationError(message);
 
 export function assertShape(value: unknown, label: string, shape: ObjectShape): Record<string, unknown> {
   const safeLabel = validateValidationLabel(label);
@@ -261,11 +241,11 @@ function validateObjectShape(value: unknown): ObjectShape {
 
 function objectDataKeys(value: Record<string, unknown>, label: string): string[] {
   const keys: string[] = [];
-  for (const key of safeOwnKeys(value, label)) {
+  for (const key of safeOwnKeys(value, label, validationError)) {
     if (typeof key !== "string") {
       throw new ValidationError(`${label} must not contain symbol properties.`);
     }
-    const descriptor = safeGetOwnPropertyDescriptor(value, key, label);
+    const descriptor = safeGetOwnPropertyDescriptor(value, key, label, validationError);
     if (!descriptor?.enumerable || !("value" in descriptor)) {
       throw new ValidationError(`${label} must not contain non-enumerable or accessor properties.`);
     }
@@ -276,37 +256,4 @@ function objectDataKeys(value: Record<string, unknown>, label: string): string[]
 
 function isSupportedShapeType(value: unknown): value is ObjectShape[string] {
   return value === "string" || value === "boolean" || value === "optionalString" || value === "optionalBoolean";
-}
-
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        index += 1;
-      }
-    }
-    bytes += utf8ScalarByteLength(scalar);
-    if (bytes > maxBytes) {
-      return bytes;
-    }
-  }
-  return bytes;
-}
-
-function utf8ScalarByteLength(scalar: number): number {
-  if (scalar <= 0x7f) {
-    return 1;
-  }
-  if (scalar <= 0x7ff) {
-    return 2;
-  }
-  if (scalar <= 0xffff) {
-    return 3;
-  }
-  return 4;
 }

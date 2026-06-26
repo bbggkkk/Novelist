@@ -1,3 +1,6 @@
+import { safeGetOwnPropertyDescriptor, safeGetPrototypeOf, safeOwnKeys } from "./safeProto.js";
+import { utf8ByteLength, utf8ByteLengthUpTo } from "./utf8.js";
+
 export type CliAction = "start" | "help" | "version";
 
 const MAX_CLI_ARGS = 256;
@@ -26,13 +29,13 @@ function validateCliArgArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     throw new Error("CLI arguments must be an array.");
   }
-  if (safeGetPrototypeOf(value) !== Array.prototype) {
+  if (safeGetPrototypeOf(value, "CLI arguments") !== Array.prototype) {
     throw new Error("CLI arguments must be a standard array.");
   }
   if (value.length > MAX_CLI_ARGS) {
     throw new Error(`CLI arguments must contain at most ${MAX_CLI_ARGS} items.`);
   }
-  for (const key of safeOwnKeys(value)) {
+  for (const key of safeOwnKeys(value, "CLI arguments property")) {
     if (key === "length") {
       continue;
     }
@@ -42,14 +45,14 @@ function validateCliArgArray(value: unknown): string[] {
     if (!isArrayIndexKey(key, value.length)) {
       throw new Error(`CLI arguments.${key} is not a supported array field.`);
     }
-    const descriptor = safeGetOwnPropertyDescriptor(value, key);
+    const descriptor = safeGetOwnPropertyDescriptor(value, key, "CLI arguments property");
     if (!descriptor?.enumerable || !("value" in descriptor)) {
       throw new Error(`CLI arguments[${key}] must be an enumerable data item.`);
     }
   }
   const args: string[] = [];
   for (let index = 0; index < value.length; index += 1) {
-    const descriptor = safeGetOwnPropertyDescriptor(value, String(index));
+    const descriptor = safeGetOwnPropertyDescriptor(value, String(index), "CLI arguments property");
     if (!descriptor) {
       throw new Error(`CLI arguments[${index}] must not be a sparse array hole.`);
     }
@@ -72,30 +75,6 @@ function validateCliArgArray(value: unknown): string[] {
     args.push(descriptor.value);
   }
   return args;
-}
-
-function safeGetPrototypeOf(value: object): object | null {
-  try {
-    return Object.getPrototypeOf(value);
-  } catch {
-    throw new Error("CLI arguments prototype must be readable.");
-  }
-}
-
-function safeOwnKeys(value: object): Array<string | symbol> {
-  try {
-    return Reflect.ownKeys(value);
-  } catch {
-    throw new Error("CLI arguments property keys must be readable.");
-  }
-}
-
-function safeGetOwnPropertyDescriptor(value: object, key: PropertyKey): PropertyDescriptor | undefined {
-  try {
-    return Object.getOwnPropertyDescriptor(value, key);
-  } catch {
-    throw new Error("CLI arguments property descriptors must be readable.");
-  }
 }
 
 function unsupportedArgsPreview(args: string[]): string {
@@ -142,56 +121,6 @@ function truncateCliText(value: string, maxChars: number, maxBytes: number): str
     bytes = nextBytes;
   }
   return output;
-}
-
-function utf8ByteLength(value: string): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        index += 1;
-      }
-    }
-    bytes += utf8ScalarByteLength(scalar);
-  }
-  return bytes;
-}
-
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        index += 1;
-      }
-    }
-    bytes += utf8ScalarByteLength(scalar);
-    if (bytes > maxBytes) {
-      return bytes;
-    }
-  }
-  return bytes;
-}
-
-function utf8ScalarByteLength(scalar: number): number {
-  if (scalar <= 0x7f) {
-    return 1;
-  }
-  if (scalar <= 0x7ff) {
-    return 2;
-  }
-  if (scalar <= 0xffff) {
-    return 3;
-  }
-  return 4;
 }
 
 function isArrayIndexKey(value: string, length: number): boolean {

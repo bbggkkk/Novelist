@@ -1,3 +1,7 @@
+import { MAX_OPERATION_TIMEOUT_MS } from "./constants.js";
+import { safeGetOwnPropertyDescriptor, safeGetPrototypeOf, safeOwnKeys } from "./safeProto.js";
+import { utf8ByteLengthUpTo } from "./utf8.js";
+
 export class OperationTimeoutError extends Error {
   constructor(message: string) {
     super(message);
@@ -16,7 +20,6 @@ export interface ExecutionSignal {
   isCancelled(): boolean;
 }
 
-const MAX_OPERATION_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_EXECUTION_SIGNAL_FIELDS = 32;
 const MAX_EXECUTION_SIGNAL_KEY_CHARS = 128;
 const MAX_EXECUTION_SIGNAL_KEY_BYTES = 256;
@@ -103,31 +106,6 @@ function validateSignal(value: unknown): (() => boolean) | undefined {
   return () => isCancelled.call(value);
 }
 
-function safeGetPrototypeOf(value: object, label: string): object | null {
-  try {
-    return Object.getPrototypeOf(value);
-  } catch {
-    throw new Error(`${label} prototype must be readable.`);
-  }
-}
-
-function safeOwnKeys(value: object, label: string): Array<string | symbol> {
-  try {
-    return Reflect.ownKeys(value);
-  } catch {
-    throw new Error(`${label} keys must be readable.`);
-  }
-}
-
-function safeGetOwnPropertyDescriptor(value: object, key: string, label: string): PropertyDescriptor | undefined;
-function safeGetOwnPropertyDescriptor(value: object, key: string | symbol, label: string): PropertyDescriptor | undefined {
-  try {
-    return Object.getOwnPropertyDescriptor(value, key);
-  } catch {
-    throw new Error(`${label} property descriptors must be readable.`);
-  }
-}
-
 function validateTimeoutMs(value: unknown): number {
   if (typeof value !== "number" || !Number.isInteger(value)) {
     throw new Error("ExecutionDeadline.timeoutMs must be an integer.");
@@ -152,37 +130,4 @@ function validateLabel(value: unknown): string {
     throw new Error("ExecutionDeadline label must not contain control characters.");
   }
   return value;
-}
-
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        index += 1;
-      }
-    }
-    bytes += utf8ScalarByteLength(scalar);
-    if (bytes > maxBytes) {
-      return bytes;
-    }
-  }
-  return bytes;
-}
-
-function utf8ScalarByteLength(scalar: number): number {
-  if (scalar <= 0x7f) {
-    return 1;
-  }
-  if (scalar <= 0x7ff) {
-    return 2;
-  }
-  if (scalar <= 0xffff) {
-    return 3;
-  }
-  return 4;
 }

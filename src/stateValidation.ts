@@ -1,6 +1,7 @@
 import { CURRENT_STATE_SCHEMA_VERSION } from "./constants.js";
 import type { BeatState, ChapterState, ConsistencyReport, PipelineFlowStatus, PipelinePhase, VolumeState } from "./types.js";
 import { assertSafeId, ValidationError } from "./validation.js";
+import { utf8ByteLengthUpTo } from "./utf8.js";
 import {
   MAX_CHAPTERS,
   MAX_BEATS_PER_CHAPTER,
@@ -166,4 +167,3 @@ function boundedSingleLineStringField(value: unknown, label: string, maxChars: n
 function boundedStringField(value: unknown, label: string, maxChars: number, maxBytes: number): string { if (typeof value !== "string") throw new ValidationError(`${label} must be a string.`); if (value.length > maxChars || utf8ByteLengthUpTo(value, maxBytes) > maxBytes) throw new ValidationError(`${label} is too large.`); if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) throw new ValidationError(`${label} must not contain control characters.`); return value; }
 function assertUnique<T extends number | string>(values: T[], label: string): void { if (new Set<T>(values).size !== values.length) throw new ValidationError(`${label} values must be unique.`); }
 function assertSequential(values: number[], label: string): void { values.forEach((value, index) => { if (value !== index + 1) throw new ValidationError(`${label} values must be sequential starting at 1.`); }); }
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number { let bytes = 0; for (const char of value) { bytes += new TextEncoder().encode(char).length; if (bytes > maxBytes) return bytes; } return bytes; }

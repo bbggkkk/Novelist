@@ -14,6 +14,7 @@ import {
   MAX_LOG_STRING_BYTES,
   MAX_LOG_STRING_CHARS
 } from "./constants.js";
+import { utf8ByteLength, utf8ByteLengthUpTo, utf8PrefixLength } from "./utf8.js";
 
 const order: Record<LogLevel, number> = {
   debug: LOG_LEVEL_DEBUG_ORDER,
@@ -29,7 +30,6 @@ const SPARSE_LOG_ARRAY_HOLE = "[SparseArrayHole]";
 const UNDEFINED_LOG_VALUE = "[Undefined]";
 const FUNCTION_LOG_VALUE = "[Function]";
 const NON_FINITE_NUMBER_LOG_VALUE = "[NonFiniteNumber]";
-const encoder = new TextEncoder();
 
 export class Logger {
   private readonly level: LogLevel;
@@ -311,35 +311,6 @@ function truncateLogString(value: string): string {
   return truncateLogText(value, MAX_LOG_STRING_CHARS, MAX_LOG_STRING_BYTES);
 }
 
-function utf8ByteLength(value: string): number {
-  return encoder.encode(value).length;
-}
-
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number {
-  let bytes = 0;
-  for (const scalar of value) {
-    bytes += utf8ScalarByteLength(scalar);
-    if (bytes > maxBytes) {
-      return bytes;
-    }
-  }
-  return bytes;
-}
-
-function utf8ScalarByteLength(scalar: string): number {
-  const codePoint = scalar.codePointAt(0) ?? 0;
-  if (codePoint <= 0x7f) {
-    return 1;
-  }
-  if (codePoint <= 0x7ff) {
-    return 2;
-  }
-  if (codePoint <= 0xffff) {
-    return 3;
-  }
-  return 4;
-}
-
 function truncateLogText(value: string, maxChars: number, maxBytes: number): string {
   const truncatedBytes = Math.max(0, utf8ByteLength(value) - maxBytes);
   const marker = truncatedBytes > 0
@@ -350,24 +321,6 @@ function truncateLogText(value: string, maxChars: number, maxBytes: number): str
     return marker;
   }
   return `${value.slice(0, utf8PrefixLength(value, maxChars - marker.length, maxBytes - markerBytes))}${marker}`;
-}
-
-function utf8PrefixLength(value: string, maxChars: number, maxBytes: number): number {
-  let chars = 0;
-  let bytes = 0;
-  for (const scalar of value) {
-    const nextChars = chars + scalar.length;
-    if (nextChars > maxChars) {
-      break;
-    }
-    const nextBytes = bytes + utf8ScalarByteLength(scalar);
-    if (nextBytes > maxBytes) {
-      break;
-    }
-    chars = nextChars;
-    bytes = nextBytes;
-  }
-  return chars;
 }
 
 function isSensitiveLogKey(key: string): boolean {

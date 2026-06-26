@@ -1,6 +1,8 @@
 import { isAbsolute } from "node:path";
 import { assertNoDuplicateJsonObjectKeys } from "./jsonPreflight.js";
 import { redactErrorMessage } from "./redaction.js";
+import { safeGetOwnPropertyDescriptor, safeGetPrototypeOf, safeOwnKeys } from "./safeProto.js";
+import { utf8ByteLength, utf8ByteLengthUpTo, utf8PrefixLength } from "./utf8.js";
 import {
   MAX_DURATION_MS,
   MAX_CONCURRENT_JOBS,
@@ -130,31 +132,6 @@ function validateEnvironmentObject(env: object): void {
     if (descriptor.value !== undefined && typeof descriptor.value !== "string") {
       throw new Error(`${key} environment value must be a string when provided.`);
     }
-  }
-}
-
-function safeGetPrototypeOf(value: object, label: string): object | null {
-  try {
-    return Object.getPrototypeOf(value);
-  } catch {
-    throw new Error(`${label} prototype must be readable.`);
-  }
-}
-
-function safeOwnKeys(value: object, label: string): Array<string | symbol> {
-  try {
-    return Reflect.ownKeys(value);
-  } catch {
-    throw new Error(`${label} keys must be readable.`);
-  }
-}
-
-function safeGetOwnPropertyDescriptor(value: object, key: string, label: string): PropertyDescriptor | undefined;
-function safeGetOwnPropertyDescriptor(value: object, key: string | symbol, label: string): PropertyDescriptor | undefined {
-  try {
-    return Object.getOwnPropertyDescriptor(value, key);
-  } catch {
-    throw new Error(`${label} property descriptors must be readable.`);
   }
 }
 
@@ -413,54 +390,4 @@ function isArrayIndexKey(value: string, length: number): boolean {
   }
   const index = Number(value);
   return Number.isSafeInteger(index) && index >= 0 && index < length && String(index) === value;
-}
-
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number {
-  let bytes = 0;
-  for (const scalar of value) {
-    bytes += utf8ScalarByteLength(scalar);
-    if (bytes > maxBytes) {
-      return bytes;
-    }
-  }
-  return bytes;
-}
-
-function utf8ByteLength(value: string): number {
-  let bytes = 0;
-  for (const scalar of value) {
-    bytes += utf8ScalarByteLength(scalar);
-  }
-  return bytes;
-}
-
-function utf8PrefixLength(value: string, maxBytes: number): number {
-  let chars = 0;
-  let bytes = 0;
-  for (const scalar of value) {
-    const nextBytes = bytes + utf8ScalarByteLength(scalar);
-    if (nextBytes > maxBytes) {
-      break;
-    }
-    chars += scalar.length;
-    bytes = nextBytes;
-  }
-  return chars;
-}
-
-function utf8ScalarByteLength(scalar: string): number {
-  const codePoint = scalar.codePointAt(0);
-  if (codePoint === undefined) {
-    return 0;
-  }
-  if (codePoint <= 0x7f) {
-    return 1;
-  }
-  if (codePoint <= 0x7ff) {
-    return 2;
-  }
-  if (codePoint <= 0xffff) {
-    return 3;
-  }
-  return 4;
 }

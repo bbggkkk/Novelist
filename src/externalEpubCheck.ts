@@ -28,6 +28,8 @@ import {
   MAX_VALIDATOR_TIMEOUT_MS
 } from "./constants.js";
 import { redactErrorMessage, redactInlineSecrets } from "./redaction.js";
+import { safeGetOwnPropertyDescriptor, safeGetPrototypeOf, safeOwnKeys } from "./safeProto.js";
+import { utf8ByteLength, utf8ByteLengthUpTo, utf8PrefixLength } from "./utf8.js";
 
 export interface ExternalEpubCheckResult {
   configured: boolean;
@@ -58,7 +60,6 @@ const EXTERNAL_VALIDATOR_CONFIG_FIELDS = new Set<keyof AppConfig>([
   "storageRoot",
   "epubLanguage"
 ]);
-const encoder = new TextEncoder();
 
 interface ExternalValidatorConfig {
   operationTimeoutMs: unknown;
@@ -225,31 +226,6 @@ function readOptionalConfigField(config: object, key: keyof AppConfig): unknown 
     throw new Error(`External EPUB validator config.${key} must be an enumerable data property.`);
   }
   return descriptor.value;
-}
-
-function safeGetPrototypeOf(value: object, label: string): object | null {
-  try {
-    return Object.getPrototypeOf(value);
-  } catch {
-    throw new Error(`${label} prototype must be readable.`);
-  }
-}
-
-function safeOwnKeys(value: object, label: string): Array<string | symbol> {
-  try {
-    return Reflect.ownKeys(value);
-  } catch {
-    throw new Error(`${label} keys must be readable.`);
-  }
-}
-
-function safeGetOwnPropertyDescriptor(value: object, key: string, label: string): PropertyDescriptor | undefined;
-function safeGetOwnPropertyDescriptor(value: object, key: string | symbol, label: string): PropertyDescriptor | undefined {
-  try {
-    return Object.getOwnPropertyDescriptor(value, key);
-  } catch {
-    throw new Error(`${label} property descriptors must be readable.`);
-  }
 }
 
 function validateCommand(command: unknown): asserts command is string {
@@ -501,43 +477,6 @@ function errorMessage(error: unknown): string {
   return redactErrorMessage(error);
 }
 
-function utf8ByteLength(value: string): number {
-  return encoder.encode(value).length;
-}
-
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        index += 1;
-      }
-    }
-    bytes += utf8ScalarByteLength(scalar);
-    if (bytes > maxBytes) {
-      return bytes;
-    }
-  }
-  return bytes;
-}
-
-function utf8ScalarByteLength(scalar: number): number {
-  if (scalar <= 0x7f) {
-    return 1;
-  }
-  if (scalar <= 0x7ff) {
-    return 2;
-  }
-  if (scalar <= 0xffff) {
-    return 3;
-  }
-  return 4;
-}
-
 function truncateTextByCharsAndBytes(value: string, maxChars: number, maxBytes: number): string {
   const marker = "\n[truncated]";
   const markerBytes = utf8ByteLength(marker);
@@ -553,35 +492,4 @@ function truncateTextByCharsAndBytesWithMarker(value: string, marker: string, ma
   }
   const markerBytes = utf8ByteLength(marker);
   return `${value.slice(0, utf8PrefixLength(value, maxChars - marker.length, maxBytes - markerBytes))}${marker}`;
-}
-
-function utf8PrefixLength(value: string, maxChars: number, maxBytes: number): number {
-  let chars = 0;
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    let charLength = 1;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        charLength = 2;
-      }
-    }
-    const nextChars = chars + charLength;
-    if (nextChars > maxChars) {
-      break;
-    }
-    const nextBytes = bytes + utf8ScalarByteLength(scalar);
-    if (nextBytes > maxBytes) {
-      break;
-    }
-    chars = nextChars;
-    bytes = nextBytes;
-    if (charLength === 2) {
-      index += 1;
-    }
-  }
-  return chars;
 }

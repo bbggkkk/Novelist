@@ -1,3 +1,5 @@
+import { utf8ByteLengthUpTo, utf8PrefixLength } from "./utf8.js";
+
 export type SyncWriter = (fd: number, data: string) => unknown;
 
 const MAX_CLI_OUTPUT_CHARS = 64 * 1024;
@@ -28,47 +30,4 @@ function boundedCliOutput(value: string): string {
   }
   const prefixLength = utf8PrefixLength(value, MAX_CLI_OUTPUT_CHARS - marker.length, MAX_CLI_OUTPUT_BYTES - markerBytes);
   return `${value.slice(0, prefixLength)}${marker}`;
-}
-
-function utf8PrefixLength(value: string, maxChars: number, maxBytes: number): number {
-  let chars = 0;
-  let bytes = 0;
-  for (const scalar of value) {
-    const nextChars = chars + scalar.length;
-    if (nextChars > maxChars) {
-      break;
-    }
-    const nextBytes = bytes + utf8ScalarByteLength(scalar);
-    if (nextBytes > maxBytes) {
-      break;
-    }
-    chars = nextChars;
-    bytes = nextBytes;
-  }
-  return chars;
-}
-
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number {
-  let bytes = 0;
-  for (const scalar of value) {
-    bytes += utf8ScalarByteLength(scalar);
-    if (bytes > maxBytes) {
-      return bytes;
-    }
-  }
-  return bytes;
-}
-
-function utf8ScalarByteLength(scalar: string): number {
-  const codePoint = scalar.codePointAt(0) ?? 0;
-  if (codePoint <= 0x7f) {
-    return 1;
-  }
-  if (codePoint <= 0x7ff) {
-    return 2;
-  }
-  if (codePoint <= 0xffff) {
-    return 3;
-  }
-  return 4;
 }

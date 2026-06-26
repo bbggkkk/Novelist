@@ -7,9 +7,11 @@ import { JobManager } from "./jobs.js";
 import { redactErrorMessage, redactInlineSecrets } from "./redaction.js";
 import { validateToolResultShape } from "./toolResultValidation.js";
 import { assertNoDuplicateJsonObjectKeys } from "./jsonPreflight.js";
+import { safeGetOwnPropertyDescriptor, safeGetPrototypeOf, safeOwnKeys } from "./safeProto.js";
 import {
   JSON_RPC_VERSION,
   MCP_PROTOCOL_VERSION,
+  MAX_INSTRUCTION_INPUT_CHARS,
   MAX_JSON_RPC_ARRAY_ITEMS,
   MAX_JSON_RPC_ID_STRING_BYTES,
   MAX_JSON_RPC_ID_STRING_CHARS,
@@ -22,11 +24,14 @@ import {
   MAX_JSON_RPC_STRING_CHARS,
   MAX_JSON_RPC_TOTAL_NODES,
   MAX_JSON_RPC_VALUE_DEPTH,
+  MAX_OPTION_INPUT_CHARS,
   MAX_STDIO_LINE_LENGTH,
+  MAX_TITLE_INPUT_CHARS,
   MIN_STDIO_LINE_LENGTH
 } from "./constants.js";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./packageInfo.js";
 import type { ToolResult } from "./types.js";
+import { utf8ByteLength, utf8ByteLengthUpTo, utf8PrefixLength } from "./utf8.js";
 
 type JsonRpcId = string | number | null;
 
@@ -77,15 +82,11 @@ const JSON_RPC_NON_PRINTING_CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u
 const MAX_STDIO_PENDING_LINES = 1000;
 const MAX_TOOL_NAME_CHARS = 128;
 const MAX_TOOL_NAME_BYTES = 128;
-const MAX_TITLE_INPUT_CHARS = 512;
 const MAX_TITLE_INPUT_BYTES = 512;
-const MAX_OPTION_INPUT_CHARS = 256;
 const MAX_OPTION_INPUT_BYTES = 256;
-const MAX_INSTRUCTION_INPUT_CHARS = 16 * 1024;
 const MAX_INSTRUCTION_INPUT_BYTES = 16 * 1024;
 const SINGLE_LINE_PRINTABLE_PATTERN = "^(?=.*\\S)[^\\u0000-\\u001f\\u007f]+$";
 const MULTILINE_PRINTABLE_PATTERN = "^(?=.*\\S)[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$";
-const encoder = new TextEncoder();
 const titleStringSchema = { type: "string", minLength: 1, maxLength: MAX_TITLE_INPUT_CHARS, "x-maxUtf8Bytes": MAX_TITLE_INPUT_BYTES, pattern: SINGLE_LINE_PRINTABLE_PATTERN };
 const optionStringSchema = { type: "string", minLength: 1, maxLength: MAX_OPTION_INPUT_CHARS, "x-maxUtf8Bytes": MAX_OPTION_INPUT_BYTES, pattern: SINGLE_LINE_PRINTABLE_PATTERN };
 const instructionStringSchema = { type: "string", minLength: 1, maxLength: MAX_INSTRUCTION_INPUT_CHARS, "x-maxUtf8Bytes": MAX_INSTRUCTION_INPUT_BYTES, pattern: MULTILINE_PRINTABLE_PATTERN };
@@ -1221,70 +1222,6 @@ function safeWrite(write: (line: string) => void, line: string): void {
   }
 }
 
-function utf8ByteLength(value: string): number {
-  return encoder.encode(value).length;
-}
-
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        index += 1;
-      }
-    }
-    bytes += utf8ScalarByteLength(scalar);
-    if (bytes > maxBytes) {
-      return bytes;
-    }
-  }
-  return bytes;
-}
-
-function utf8PrefixLength(value: string, maxBytes: number): number {
-  let chars = 0;
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    let charLength = 1;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        charLength = 2;
-      }
-    }
-    const nextBytes = bytes + utf8ScalarByteLength(scalar);
-    if (nextBytes > maxBytes) {
-      break;
-    }
-    chars += charLength;
-    bytes = nextBytes;
-    if (charLength === 2) {
-      index += 1;
-    }
-  }
-  return chars;
-}
-
-function utf8ScalarByteLength(scalar: number): number {
-  if (scalar <= 0x7f) {
-    return 1;
-  }
-  if (scalar <= 0x7ff) {
-    return 2;
-  }
-  if (scalar <= 0xffff) {
-    return 3;
-  }
-  return 4;
-}
-
 function fitsMaxLine(value: string, maxLineLength: number): boolean {
   return value.length <= maxLineLength && utf8ByteLengthUpTo(value, maxLineLength) <= maxLineLength;
 }
@@ -1504,30 +1441,6 @@ function assertJsonRpcArrayDataProperties(value: unknown[], label: string): void
     if (!descriptor?.enumerable || !("value" in descriptor)) {
       throw new Error(`${label}[${key}] must not contain non-enumerable or accessor properties.`);
     }
-  }
-}
-
-function safeGetPrototypeOf(value: object, label: string): object | null {
-  try {
-    return Object.getPrototypeOf(value);
-  } catch {
-    throw new Error(`${label} prototype must be readable.`);
-  }
-}
-
-function safeOwnKeys(value: object, label: string): Array<string | symbol> {
-  try {
-    return Reflect.ownKeys(value);
-  } catch {
-    throw new Error(`${label} keys must be readable.`);
-  }
-}
-
-function safeGetOwnPropertyDescriptor(value: object, key: PropertyKey, label: string): PropertyDescriptor | undefined {
-  try {
-    return Object.getOwnPropertyDescriptor(value, key);
-  } catch {
-    throw new Error(`${label} property descriptors must be readable.`);
   }
 }
 

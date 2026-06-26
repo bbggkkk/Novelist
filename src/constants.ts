@@ -12,6 +12,7 @@ export const JSON_RPC_VERSION = "2.0";
 export const CURRENT_STATE_SCHEMA_VERSION = 1;
 export const HEALTH_STORAGE_ROOT_HASH = "project-.novelist";
 export const HEALTH_AGENT_PROVIDER = "mcp-caller";
+export const STARTUP_FAILED_EVENT = "novelist_startup_failed";
 
 // ── Validation limits ───────────────────────────────────────────────────────
 
@@ -69,6 +70,9 @@ export const MAX_STORAGE_JOB_SNAPSHOTS = 100000;
 export const MAX_STORAGE_PATH_CHARS = 8192;
 export const MAX_STORAGE_PATH_BYTES = 8192;
 export const MAX_SLUG_INPUT_CHARS = 16 * 1024;
+export const MAX_TITLE_INPUT_CHARS = 512;
+export const MAX_OPTION_INPUT_CHARS = 256;
+export const MAX_INSTRUCTION_INPUT_CHARS = 16 * 1024;
 
 // ── EPUB limits ───────────────────────────────────────────────────────────────
 
@@ -129,6 +133,8 @@ export const MAX_VALIDATOR_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
 // ── Config parsing ───────────────────────────────────────────────────────────
 
 export const MAX_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
+export const MAX_OPERATION_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
+export const MAX_JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const MAX_CONCURRENT_JOBS = 64;
 export const MAX_TOTAL_JOBS = 100000;
 export const MIN_STDIO_LINE_LENGTH = 256;

@@ -1,3 +1,5 @@
+import { utf8ByteLength, utf8ByteLengthUpTo, utf8PrefixLength } from "./utf8.js";
+
 const MAX_REDACTION_INPUT_CHARS = 1024 * 1024;
 const MAX_REDACTION_INPUT_BYTES = 1024 * 1024;
 const REDACTION_BOUNDARY_LOOKAHEAD_CHARS = 4096;
@@ -86,56 +88,6 @@ function safeOwnMessageDescriptor(value: object): PropertyDescriptor | undefined
   }
 }
 
-function utf8ByteLength(value: string): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        index += 1;
-      }
-    }
-    bytes += utf8ScalarByteLength(scalar);
-  }
-  return bytes;
-}
-
-function utf8ByteLengthUpTo(value: string, maxBytes: number): number {
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const first = value.charCodeAt(index);
-    let scalar = first;
-    if (first >= 0xd800 && first <= 0xdbff && index + 1 < value.length) {
-      const second = value.charCodeAt(index + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) {
-        scalar = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-        index += 1;
-      }
-    }
-    bytes += utf8ScalarByteLength(scalar);
-    if (bytes > maxBytes) {
-      return bytes;
-    }
-  }
-  return bytes;
-}
-
-function utf8ScalarByteLength(scalar: number): number {
-  if (scalar <= 0x7f) {
-    return 1;
-  }
-  if (scalar <= 0x7ff) {
-    return 2;
-  }
-  if (scalar <= 0xffff) {
-    return 3;
-  }
-  return 4;
-}
-
 function truncateRedactionText(value: string, maxChars: number, maxBytes: number): string {
   if (value.length <= maxChars && utf8ByteLengthUpTo(value, maxBytes) <= maxBytes) {
     return value;
@@ -155,22 +107,4 @@ function truncateRedactionTextWithMarker(value: string, marker: string, maxChars
     return `${value}${marker}`;
   }
   return `${value.slice(0, utf8PrefixLength(value, maxChars - marker.length, maxBytes - markerBytes))}${marker}`;
-}
-
-function utf8PrefixLength(value: string, maxChars: number, maxBytes: number): number {
-  let chars = 0;
-  let bytes = 0;
-  for (const scalar of value) {
-    const nextChars = chars + scalar.length;
-    if (nextChars > maxChars) {
-      break;
-    }
-    const nextBytes = bytes + utf8ScalarByteLength(scalar.codePointAt(0) ?? 0);
-    if (nextBytes > maxBytes) {
-      break;
-    }
-    chars = nextChars;
-    bytes = nextBytes;
-  }
-  return chars;
 }

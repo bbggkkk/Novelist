@@ -16901,6 +16901,15 @@ test("pack check restricts package scripts to reviewed commands", async () => {
 
   await writeFile(join(root, "package.json"), JSON.stringify({
     ...packageJson,
+    scripts: { prepare: "node prepare.js" }
+  }), "utf8");
+  await assertRejects(
+    execFilePromise(process.execPath, [join(process.cwd(), "scripts", "pack-check.mjs"), "pack.json"], root),
+    /scripts\.prepare must be exactly the reviewed command/
+  );
+
+  await writeFile(join(root, "package.json"), JSON.stringify({
+    ...packageJson,
     scripts: {
       build: "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/src/cli.js', 0o755)\"",
       test: "npm run build && node dist/tests/pipeline.test.js",

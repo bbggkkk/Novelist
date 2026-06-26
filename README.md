@@ -61,6 +61,8 @@ unsupported-argument previews are also truncated by both measures before startup
 
 For local development without a global install, use `npm start` after `npm run build`, or point your MCP
 client at the built `dist/src/cli.js` file as shown below.
+GitHub installs are supported through the reviewed `prepare` script, which builds `dist/src/cli.js` before
+`npx` runs the `novelist-mcp` executable from a source checkout.
 The package library entrypoint exports the MCP server, pipeline, storage, agents, `ExecutionDeadline`,
 its timeout/cancellation error classes, validation helpers, EPUB helpers, `PACKAGE_NAME`, `PACKAGE_VERSION`,
 and matching TypeScript declarations.
@@ -796,6 +798,27 @@ Local source checkout:
     "novelist": {
       "command": "node",
       "args": ["/absolute/path/to/novelist/dist/src/cli.js"],
+      "env": {
+        "NOVELIST_DATA_DIR": "/absolute/path/to/novelist/data"
+      }
+    }
+  }
+}
+```
+
+GitHub source via `npx`:
+
+```json
+{
+  "mcpServers": {
+    "novelist": {
+      "command": "npx",
+      "args": [
+        "--yes",
+        "--package",
+        "git+ssh://git@github.com/bbggkkk/Novelist.git",
+        "novelist-mcp"
+      ],
       "env": {
         "NOVELIST_DATA_DIR": "/absolute/path/to/novelist/data"
       }

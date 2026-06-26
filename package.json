@@ -28,6 +28,7 @@
     "test": "npm run build && node dist/tests/pipeline.test.js",
     "pack:check": "npm run build && npm pack --dry-run --json --cache /tmp/novelist-npm-cache | node scripts/pack-check.mjs -",
     "verify": "npm test && npm run pack:check",
+    "prepare": "npm run build",
     "start": "node dist/src/cli.js"
   },
   "publishConfig": {

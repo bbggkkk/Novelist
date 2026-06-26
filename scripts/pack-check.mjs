@@ -42,14 +42,14 @@ const forbiddenLifecycleScripts = [
   "install",
   "postinstall",
   "prepublish",
-  "prepublishOnly",
-  "prepare"
+  "prepublishOnly"
 ];
 const expectedScripts = {
   build: "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/src/cli.js', 0o755)\"",
   test: "npm run build && node dist/tests/pipeline.test.js",
   "pack:check": "npm run build && npm pack --dry-run --json --cache /tmp/novelist-npm-cache | node scripts/pack-check.mjs -",
   verify: "npm test && npm run pack:check",
+  prepare: "npm run build",
   start: "node dist/src/cli.js"
 };
 const forbiddenRuntimeDependencyFields = [

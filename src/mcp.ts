@@ -2,19 +2,36 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { NovelPipeline } from "./pipeline.js";
 import { loadConfig } from "./config.js";
 import { Logger } from "./logger.js";
-import { createNovelAgents } from "./agentFactory.js";
 import { NovelStorage } from "./storage.js";
 import { JobManager } from "./jobs.js";
 import { redactErrorMessage, redactInlineSecrets } from "./redaction.js";
 import { validateToolResultShape } from "./toolResultValidation.js";
 import { assertNoDuplicateJsonObjectKeys } from "./jsonPreflight.js";
-import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.js";
+import {
+  JSON_RPC_VERSION,
+  MCP_PROTOCOL_VERSION,
+  MAX_JSON_RPC_ARRAY_ITEMS,
+  MAX_JSON_RPC_ID_STRING_BYTES,
+  MAX_JSON_RPC_ID_STRING_CHARS,
+  MAX_JSON_RPC_METHOD_BYTES,
+  MAX_JSON_RPC_METHOD_CHARS,
+  MAX_JSON_RPC_OBJECT_FIELDS,
+  MAX_JSON_RPC_OBJECT_KEY_BYTES,
+  MAX_JSON_RPC_OBJECT_KEY_CHARS,
+  MAX_JSON_RPC_STRING_BYTES,
+  MAX_JSON_RPC_STRING_CHARS,
+  MAX_JSON_RPC_TOTAL_NODES,
+  MAX_JSON_RPC_VALUE_DEPTH,
+  MAX_STDIO_LINE_LENGTH,
+  MIN_STDIO_LINE_LENGTH
+} from "./constants.js";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./packageInfo.js";
 import type { ToolResult } from "./types.js";
 
 type JsonRpcId = string | number | null;
 
 interface JsonRpcRequest {
-  jsonrpc: "2.0";
+  jsonrpc: typeof JSON_RPC_VERSION;
   id?: JsonRpcId;
   method: string;
   params?: unknown;
@@ -33,18 +50,6 @@ const MAX_MCP_ERROR_BYTES = 4000;
 const MAX_TOOL_RESPONSE_TEXT_CHARS = 256 * 1024;
 const MAX_TOOL_RESPONSE_TEXT_BYTES = 256 * 1024;
 const MAX_TOOL_RESULT_MESSAGE_CHARS = 4000;
-const MAX_JSON_RPC_ID_STRING_CHARS = 256;
-const MAX_JSON_RPC_ID_STRING_BYTES = 256;
-const MAX_JSON_RPC_METHOD_CHARS = 128;
-const MAX_JSON_RPC_METHOD_BYTES = 128;
-const MAX_JSON_RPC_VALUE_DEPTH = 32;
-const MAX_JSON_RPC_OBJECT_FIELDS = 100;
-const MAX_JSON_RPC_OBJECT_KEY_CHARS = 256;
-const MAX_JSON_RPC_OBJECT_KEY_BYTES = 512;
-const MAX_JSON_RPC_ARRAY_ITEMS = 1000;
-const MAX_JSON_RPC_TOTAL_NODES = 10000;
-const MAX_JSON_RPC_STRING_CHARS = 16 * 1024;
-const MAX_JSON_RPC_STRING_BYTES = 16 * 1024;
 const MAX_MCP_STORAGE_ROOT_CHARS = 4096;
 const MAX_MCP_STORAGE_ROOT_BYTES = 4096;
 const JSON_RPC_REQUEST_VALUE_LIMITS = {
@@ -69,8 +74,6 @@ const JSON_RPC_RESPONSE_VALUE_LIMITS = {
 };
 const MCP_ERROR_CONTROL_CHARS_GLOBAL = /[\u0000-\u001f\u007f]/gu;
 const JSON_RPC_NON_PRINTING_CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
-const MIN_STDIO_LINE_LENGTH = 256;
-const MAX_STDIO_LINE_LENGTH = 16 * 1024 * 1024;
 const MAX_STDIO_PENDING_LINES = 1000;
 const MAX_TOOL_NAME_CHARS = 128;
 const MAX_TOOL_NAME_BYTES = 128;
@@ -86,14 +89,6 @@ const encoder = new TextEncoder();
 const titleStringSchema = { type: "string", minLength: 1, maxLength: MAX_TITLE_INPUT_CHARS, "x-maxUtf8Bytes": MAX_TITLE_INPUT_BYTES, pattern: SINGLE_LINE_PRINTABLE_PATTERN };
 const optionStringSchema = { type: "string", minLength: 1, maxLength: MAX_OPTION_INPUT_CHARS, "x-maxUtf8Bytes": MAX_OPTION_INPUT_BYTES, pattern: SINGLE_LINE_PRINTABLE_PATTERN };
 const instructionStringSchema = { type: "string", minLength: 1, maxLength: MAX_INSTRUCTION_INPUT_CHARS, "x-maxUtf8Bytes": MAX_INSTRUCTION_INPUT_BYTES, pattern: MULTILINE_PRINTABLE_PATTERN };
-const revisionTargetStringSchema = {
-  type: "string",
-  minLength: 1,
-  maxLength: MAX_OPTION_INPUT_CHARS,
-  "x-maxUtf8Bytes": MAX_OPTION_INPUT_BYTES,
-  pattern: "^(?:[Cc][Hh][Aa][Pp][Tt][Ee][Rr]:[1-9]\\d*,? *[Bb][Ee][Aa][Tt]:[1-9]\\d*|[1-9]\\d*[-/][1-9]\\d*)$",
-  description: "Revision selector: chapter:<n>,beat:<n>, chapter:<n> beat:<n>, <chapter>-<beat>, or <chapter>/<beat>."
-};
 const safeIdStringSchema = {
   type: "string",
   minLength: 1,
@@ -102,7 +97,7 @@ const safeIdStringSchema = {
   pattern: "^(?!.*\\.\\.)[a-z0-9가-힣][a-z0-9가-힣._-]*$",
   description: "Safe path ID segment. Runtime validation also caps this at 120 UTF-8 bytes."
 };
-const newProjectInputSchema = {
+const startInputSchema = {
   type: "object",
   required: ["franchiseName", "workRequest"],
   properties: {
@@ -115,30 +110,7 @@ const newProjectInputSchema = {
   },
   additionalProperties: false
 };
-const confirmInputSchema = {
-  type: "object",
-  required: ["confirmationId", "approved"],
-  properties: {
-    confirmationId: safeIdStringSchema,
-    approved: { type: "boolean" },
-    revisionInstruction: instructionStringSchema
-  },
-  oneOf: [
-    {
-      properties: {
-        approved: { enum: [true] }
-      }
-    },
-    {
-      required: ["revisionInstruction"],
-      properties: {
-        approved: { enum: [false] }
-      }
-    }
-  ],
-  additionalProperties: false
-};
-const continueInputSchema = {
+const locatorInputSchema = {
   type: "object",
   properties: {
     franchiseId: safeIdStringSchema,
@@ -179,18 +151,6 @@ const continueInputSchema = {
   ],
   additionalProperties: false
 };
-const reviseInputSchema = {
-  type: "object",
-  required: ["franchiseId", "workId", "volumeId", "target", "instruction"],
-  properties: {
-    franchiseId: safeIdStringSchema,
-    workId: safeIdStringSchema,
-    volumeId: safeIdStringSchema,
-    target: revisionTargetStringSchema,
-    instruction: instructionStringSchema
-  },
-  additionalProperties: false
-};
 const buildEpubInputSchema = {
   type: "object",
   required: ["franchiseId", "workId", "volumeId"],
@@ -201,11 +161,151 @@ const buildEpubInputSchema = {
   },
   additionalProperties: false
 };
+const startVolumeInputSchema = {
+  type: "object",
+  required: ["franchiseId", "workId", "volumeRequest"],
+  properties: {
+    franchiseId: safeIdStringSchema,
+    workId: safeIdStringSchema,
+    volumeRequest: titleStringSchema,
+    franchiseName: titleStringSchema,
+    workTitle: titleStringSchema
+  },
+  additionalProperties: false
+};
+const scopedDocumentInputSchema = {
+  type: "object",
+  required: ["text", "consistencyReport"],
+  properties: {
+    franchiseId: safeIdStringSchema,
+    workId: safeIdStringSchema,
+    volumeId: safeIdStringSchema,
+    current: { type: "boolean" },
+    scope: { type: "string", enum: ["franchise", "work", "volume"] },
+    text: instructionStringSchema,
+    consistencyReport: {
+      type: "object",
+      required: ["ok", "checkedAgainst", "issues"],
+      properties: {
+        ok: { type: "boolean" },
+        checkedAgainst: { type: "array", items: optionStringSchema, maxItems: 1000 },
+        issues: {
+          type: "array",
+          maxItems: 1000,
+          items: {
+            type: "object",
+            required: ["scope", "description"],
+            properties: {
+              scope: optionStringSchema,
+              description: instructionStringSchema
+            },
+            additionalProperties: false
+          }
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  additionalProperties: false
+};
+const submitBeatInputSchema = {
+  type: "object",
+  required: ["text", "consistencyReport"],
+  properties: {
+    franchiseId: safeIdStringSchema,
+    workId: safeIdStringSchema,
+    volumeId: safeIdStringSchema,
+    current: { type: "boolean" },
+    chapterNo: { type: "integer", minimum: 1, maximum: 5000 },
+    beatNo: { type: "integer", minimum: 1, maximum: 5000 },
+    text: instructionStringSchema,
+    consistencyReport: scopedDocumentInputSchema.properties.consistencyReport
+  },
+  additionalProperties: false
+};
+const outlineInputSchema = {
+  type: "object",
+  required: ["text", "chapters", "consistencyReport"],
+  properties: {
+    franchiseId: safeIdStringSchema,
+    workId: safeIdStringSchema,
+    volumeId: safeIdStringSchema,
+    current: { type: "boolean" },
+    text: instructionStringSchema,
+    chapters: {
+      type: "array",
+      minItems: 1,
+      maxItems: 200,
+      items: {
+        type: "object",
+        required: ["title", "beats"],
+        properties: {
+          title: titleStringSchema,
+          targetWords: { type: "integer", minimum: 1, maximum: 200000000 },
+          beats: {
+            type: "array",
+            minItems: 1,
+            maxItems: 200,
+            items: {
+              type: "object",
+              required: ["title", "targetWords"],
+              properties: {
+                title: titleStringSchema,
+                targetWords: { type: "integer", minimum: 1, maximum: 1000000 }
+              },
+              additionalProperties: false
+            }
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    consistencyReport: scopedDocumentInputSchema.properties.consistencyReport
+  },
+  additionalProperties: false
+};
+const beatDraftInputSchema = {
+  type: "object",
+  required: ["text"],
+  properties: {
+    franchiseId: safeIdStringSchema,
+    workId: safeIdStringSchema,
+    volumeId: safeIdStringSchema,
+    current: { type: "boolean" },
+    chapterNo: { type: "integer", minimum: 1, maximum: 5000 },
+    beatNo: { type: "integer", minimum: 1, maximum: 5000 },
+    text: instructionStringSchema
+  },
+  additionalProperties: false
+};
+const rewriteBeatInputSchema = {
+  type: "object",
+  required: ["chapterNo", "beatNo", "text", "consistencyReport"],
+  properties: {
+    franchiseId: safeIdStringSchema,
+    workId: safeIdStringSchema,
+    volumeId: safeIdStringSchema,
+    current: { type: "boolean" },
+    chapterNo: { type: "integer", minimum: 1, maximum: 5000 },
+    beatNo: { type: "integer", minimum: 1, maximum: 5000 },
+    text: instructionStringSchema,
+    consistencyReport: scopedDocumentInputSchema.properties.consistencyReport
+  },
+  additionalProperties: false
+};
 const asyncJobToolSchemas = [
-  { toolName: "novel_new_project", argsSchema: newProjectInputSchema, argsRequired: true },
-  { toolName: "novel_confirm", argsSchema: confirmInputSchema, argsRequired: true },
-  { toolName: "novel_continue", argsSchema: continueInputSchema, argsRequired: false },
-  { toolName: "novel_revise", argsSchema: reviseInputSchema, argsRequired: true },
+  { toolName: "novel_start", argsSchema: startInputSchema, argsRequired: true },
+  { toolName: "novel_start_volume", argsSchema: startVolumeInputSchema, argsRequired: true },
+  { toolName: "novel_next", argsSchema: locatorInputSchema, argsRequired: false },
+  { toolName: "novel_submit_world", argsSchema: scopedDocumentInputSchema, argsRequired: true },
+  { toolName: "novel_finalize_world", argsSchema: locatorInputSchema, argsRequired: false },
+  { toolName: "novel_submit_setting", argsSchema: scopedDocumentInputSchema, argsRequired: true },
+  { toolName: "novel_finalize_setting", argsSchema: locatorInputSchema, argsRequired: false },
+  { toolName: "novel_submit_outline", argsSchema: outlineInputSchema, argsRequired: true },
+  { toolName: "novel_finalize_outline", argsSchema: locatorInputSchema, argsRequired: false },
+  { toolName: "novel_save_beat_draft", argsSchema: beatDraftInputSchema, argsRequired: true },
+  { toolName: "novel_submit_beat", argsSchema: submitBeatInputSchema, argsRequired: true },
+  { toolName: "novel_rewrite_beat", argsSchema: rewriteBeatInputSchema, argsRequired: true },
   { toolName: "novel_build_epub", argsSchema: buildEpubInputSchema, argsRequired: true }
 ].map(({ toolName, argsSchema, argsRequired }) => ({
   type: "object",
@@ -218,6 +318,66 @@ const asyncJobToolSchemas = [
 }));
 
 const tools = [
+  {
+    name: "novel_start_volume",
+    description: "Start or resume a new volume under an existing franchise/work.",
+    inputSchema: startVolumeInputSchema
+  },
+  {
+    name: "novel_start",
+    description: "Start or resume the fixed novelist pipeline for a franchise/work/volume.",
+    inputSchema: startInputSchema
+  },
+  {
+    name: "novel_submit_outline",
+    description: "Submit the volume outline and chapter/beat structure with a binary consistency report.",
+    inputSchema: outlineInputSchema
+  },
+  {
+    name: "novel_finalize_outline",
+    description: "Finalize the current outline and advance to writing.",
+    inputSchema: locatorInputSchema
+  },
+  {
+    name: "novel_save_beat_draft",
+    description: "Save a draft for the current beat without completing it.",
+    inputSchema: beatDraftInputSchema
+  },
+  {
+    name: "novel_next",
+    description: "Return the current fixed pipeline phase and required next action.",
+    inputSchema: locatorInputSchema
+  },
+  {
+    name: "novel_rewrite_beat",
+    description: "Rewrite an existing beat with a binary consistency report.",
+    inputSchema: rewriteBeatInputSchema
+  },
+  {
+    name: "novel_submit_world",
+    description: "Submit the current world document with a binary consistency report.",
+    inputSchema: scopedDocumentInputSchema
+  },
+  {
+    name: "novel_finalize_world",
+    description: "Finalize the current world document and advance the fixed pipeline.",
+    inputSchema: locatorInputSchema
+  },
+  {
+    name: "novel_submit_setting",
+    description: "Submit the current setting document with a binary consistency report.",
+    inputSchema: scopedDocumentInputSchema
+  },
+  {
+    name: "novel_finalize_setting",
+    description: "Finalize the current setting document and advance the fixed pipeline.",
+    inputSchema: locatorInputSchema
+  },
+  {
+    name: "novel_submit_beat",
+    description: "Submit the current beat manuscript with a binary consistency report.",
+    inputSchema: submitBeatInputSchema
+  },
   {
     name: "novel_health",
     description: "Return operational health information for the Novelist MCP server.",
@@ -282,29 +442,9 @@ const tools = [
     }
   },
   {
-    name: "novel_new_project",
-    description: "Create a new franchise/work/volume pipeline and return an initial outline for user confirmation.",
-    inputSchema: newProjectInputSchema
-  },
-  {
-    name: "novel_confirm",
-    description: "Resolve a pending confirmation and resume the novel pipeline.",
-    inputSchema: confirmInputSchema
-  },
-  {
-    name: "novel_continue",
-    description: "Continue drafting and reviewing the current or specified volume pipeline.",
-    inputSchema: continueInputSchema
-  },
-  {
     name: "novel_status",
     description: "Return status for the current or specified novel pipeline.",
-    inputSchema: continueInputSchema
-  },
-  {
-    name: "novel_revise",
-    description: "Revise a target beat through the same write/edit/proofread/continuity pipeline.",
-    inputSchema: reviseInputSchema
+    inputSchema: locatorInputSchema
   },
   {
     name: "novel_build_epub",
@@ -355,7 +495,7 @@ export class McpServer {
       const requestFields = validateJsonRpcRequest(request);
       if (requestFields.method === "initialize") {
         return maybeResponse(requestFields.id, {
-          protocolVersion: "2024-11-05",
+          protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: { tools: {} },
           serverInfo: { name: PACKAGE_NAME, version: PACKAGE_VERSION }
         });
@@ -411,8 +551,30 @@ export class McpServer {
 
   private async callTool(name: string, args: unknown): Promise<unknown> {
     switch (name) {
-      case "novel_new_project":
-        return this.pipeline.newProject(args as never);
+      case "novel_start":
+        return this.pipeline.start(args as never);
+      case "novel_start_volume":
+        return this.pipeline.startVolume(args as never);
+      case "novel_next":
+        return this.pipeline.next(args as never);
+      case "novel_submit_world":
+        return this.pipeline.submitWorld(args as never);
+      case "novel_finalize_world":
+        return this.pipeline.finalizeWorld(args as never);
+      case "novel_submit_setting":
+        return this.pipeline.submitSetting(args as never);
+      case "novel_finalize_setting":
+        return this.pipeline.finalizeSetting(args as never);
+      case "novel_submit_outline":
+        return this.pipeline.submitOutline(args as never);
+      case "novel_finalize_outline":
+        return this.pipeline.finalizeOutline(args as never);
+      case "novel_save_beat_draft":
+        return this.pipeline.saveBeatDraft(args as never);
+      case "novel_submit_beat":
+        return this.pipeline.submitBeat(args as never);
+      case "novel_rewrite_beat":
+        return this.pipeline.rewriteBeat(args as never);
       case "novel_health":
         return this.pipeline.health(args as never);
       case "novel_job_start":
@@ -425,14 +587,8 @@ export class McpServer {
         return this.jobs.cleanup(args);
       case "novel_job_cancel":
         return this.jobs.cancel(args);
-      case "novel_confirm":
-        return this.pipeline.confirm(args as never);
-      case "novel_continue":
-        return this.pipeline.continue(args as never);
       case "novel_status":
         return this.pipeline.status(args as never);
-      case "novel_revise":
-        return this.pipeline.revise(args as never);
       case "novel_build_epub":
         return this.pipeline.buildEpub(args as never);
       default:
@@ -448,7 +604,7 @@ export class McpServer {
 }
 
 function createDefaultPipeline(config: ReturnType<typeof loadConfig>, storage = new NovelStorage(config)): { pipeline: NovelPipeline; storage: NovelStorage } {
-  return { pipeline: new NovelPipeline(storage, createNovelAgents(config), config), storage };
+  return { pipeline: new NovelPipeline(storage, config), storage };
 }
 
 function toolArguments(value: unknown): Record<string, unknown> {
@@ -585,7 +741,7 @@ function cloneJson<T>(value: T): T {
 function withStartupHealth(result: ToolResult, startupError: string): ToolResult {
   const data = startupHealthData(result.data, startupError);
   return {
-    status: "blocked",
+    status: "needs_input",
     message: `${result.message} Startup recovery failed.`,
     data
   };
@@ -809,12 +965,20 @@ function validateMcpPipeline(value: unknown): NovelPipeline {
   if (!safeInstanceOf(value, NovelPipeline, "McpServer.pipeline")) {
     throw new Error("McpServer.pipeline must be a NovelPipeline instance.");
   }
-  validateMethodObject(value, "newProject", "McpServer.pipeline");
+  validateMethodObject(value, "start", "McpServer.pipeline");
+  validateMethodObject(value, "startVolume", "McpServer.pipeline");
+  validateMethodObject(value, "next", "McpServer.pipeline");
+  validateMethodObject(value, "submitWorld", "McpServer.pipeline");
+  validateMethodObject(value, "finalizeWorld", "McpServer.pipeline");
+  validateMethodObject(value, "submitSetting", "McpServer.pipeline");
+  validateMethodObject(value, "finalizeSetting", "McpServer.pipeline");
+  validateMethodObject(value, "submitOutline", "McpServer.pipeline");
+  validateMethodObject(value, "finalizeOutline", "McpServer.pipeline");
+  validateMethodObject(value, "saveBeatDraft", "McpServer.pipeline");
+  validateMethodObject(value, "submitBeat", "McpServer.pipeline");
+  validateMethodObject(value, "rewriteBeat", "McpServer.pipeline");
   validateMethodObject(value, "health", "McpServer.pipeline");
-  validateMethodObject(value, "confirm", "McpServer.pipeline");
-  validateMethodObject(value, "continue", "McpServer.pipeline");
   validateMethodObject(value, "status", "McpServer.pipeline");
-  validateMethodObject(value, "revise", "McpServer.pipeline");
   validateMethodObject(value, "buildEpub", "McpServer.pipeline");
   return value as NovelPipeline;
 }
@@ -1006,8 +1170,8 @@ function validateJsonRpcResponseEnvelope(value: unknown): void {
   const id = requiredOwnDataProperty(responseObject, "id", "JSON-RPC response");
   const result = optionalOwnDataProperty(responseObject, "result", "JSON-RPC response");
   const error = optionalOwnDataProperty(responseObject, "error", "JSON-RPC response");
-  if (jsonrpc !== "2.0") {
-    throw new Error("JSON-RPC response.jsonrpc must be \"2.0\".");
+  if (jsonrpc !== JSON_RPC_VERSION) {
+    throw new Error(`JSON-RPC response.jsonrpc must be \"${JSON_RPC_VERSION}\".`);
   }
   if (!isJsonRpcId(id)) {
     throw new Error(`JSON-RPC response.id must be a string up to ${MAX_JSON_RPC_ID_STRING_CHARS} characters and ${MAX_JSON_RPC_ID_STRING_BYTES} UTF-8 bytes, a safe integer, or null.`);
@@ -1181,8 +1345,8 @@ function validateJsonRpcRequest(request: unknown): JsonRpcRequest {
   }
   assertKnownFields(snapshot as Record<string, unknown>, "JSON-RPC request", ["jsonrpc", "id", "method", "params"]);
   const candidate = jsonRpcRequestFields(snapshot);
-  if (candidate.jsonrpc !== "2.0") {
-    throw new Error("jsonrpc must be \"2.0\".");
+  if (candidate.jsonrpc !== JSON_RPC_VERSION) {
+    throw new Error(`jsonrpc must be \"${JSON_RPC_VERSION}\".`);
   }
   if (candidate.id !== undefined && !isJsonRpcId(candidate.id)) {
     throw new Error(`id must be a string up to ${MAX_JSON_RPC_ID_STRING_CHARS} characters and ${MAX_JSON_RPC_ID_STRING_BYTES} UTF-8 bytes, a safe integer, null, or omitted.`);
@@ -1402,7 +1566,7 @@ function isJsonRpcId(value: unknown): value is JsonRpcId {
 }
 
 function response(id: JsonRpcId, result: unknown) {
-  return validatedJsonRpcResponse({ jsonrpc: "2.0", id, result });
+  return validatedJsonRpcResponse({ jsonrpc: JSON_RPC_VERSION, id, result });
 }
 
 function maybeResponse(id: JsonRpcId | undefined, result: unknown) {
@@ -1410,7 +1574,7 @@ function maybeResponse(id: JsonRpcId | undefined, result: unknown) {
 }
 
 function errorResponse(id: JsonRpcId, code: number, message: string) {
-  return { jsonrpc: "2.0", id, error: { code, message } };
+  return { jsonrpc: JSON_RPC_VERSION, id, error: { code, message } };
 }
 
 function directErrorResponse(id: JsonRpcId, code: number, message: string) {

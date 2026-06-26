@@ -52,6 +52,14 @@ declare module "node:fs" {
   export function writeSync(fd: number, data: string): number;
 }
 
+declare module "node:module" {
+  export function createRequire(filename: string): (id: string) => unknown;
+}
+
+interface ImportMeta {
+  url: string;
+}
+
 declare module "node:http" {
   export interface IncomingMessage {
     method?: string;

@@ -287,11 +287,9 @@ function assertKnownFields(value: Record<string, unknown>, label: string, allowe
 
 function isToolResultStatus(value: string): value is ToolResult["status"] {
   return value === "ok" ||
-    value === "pending_user_confirmation" ||
-    value === "planning" ||
-    value === "drafting" ||
-    value === "reviewing" ||
-    value === "blocked" ||
+    value === "needs_input" ||
+    value === "pending_finalization" ||
+    value === "ready" ||
     value === "complete";
 }
 

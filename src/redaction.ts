@@ -25,7 +25,7 @@ function redactBoundedText(value: string): string {
     .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "AWS[Redacted]")
     .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[Redacted JWT]")
     .replace(
-      /\b((?:x-)?(?:openai[-_])?api[-_]?key|(?:x|openai)?apiKey|aws[-_]?access[-_]?key[-_]?id|awsAccessKeyId|aws[-_]?secret[-_]?access[-_]?key|awsSecretAccessKey|access[-_]?token|refresh[-_]?token|accessToken|refreshToken|token|client[-_]?secret|clientSecret|password|secret)\b(\s*[:=]\s*)(["']?)[^\s"',;&}/]+(["']?)/gi,
+      /\b((?:x-)?api[-_]?key|x?apiKey|aws[-_]?access[-_]?key[-_]?id|awsAccessKeyId|aws[-_]?secret[-_]?access[-_]?key|awsSecretAccessKey|access[-_]?token|refresh[-_]?token|accessToken|refreshToken|token|client[-_]?secret|clientSecret|password|secret)\b(\s*[:=]\s*)(["']?)[^\s"',;&}/]+(["']?)/gi,
       "$1$2$3[Redacted]$4"
     );
 }

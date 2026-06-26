@@ -3,7 +3,30 @@ import { constants } from "node:fs";
 import { access, lstat, realpath, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import type { AppConfig } from "./config.js";
-import { MAX_EPUB_ARCHIVE_BYTES } from "./epub.js";
+import {
+  DEFAULT_VALIDATOR_CWD,
+  DEFAULT_VALIDATOR_PATH,
+  MAX_CAPTURED_OUTPUT_CHARS,
+  MAX_CAPTURED_OUTPUT_BYTES,
+  MAX_EPUB_ARCHIVE_BYTES,
+  MAX_EPUB_PATH_CHARS,
+  MAX_EPUB_PATH_BYTES,
+  MAX_EXEC_ARGS,
+  MAX_EXEC_ARGV_BYTES,
+  MAX_EXEC_ARG_CHARS,
+  MAX_EXEC_ARG_TEMPLATE_BYTES,
+  MAX_EXEC_ARG_TEMPLATE_CHARS,
+  MAX_PROCESS_BUFFER_BYTES,
+  MAX_REPORTED_ARGS,
+  MAX_REPORTED_ARG_BYTES,
+  MAX_REPORTED_ARG_CHARS,
+  MAX_REPORTED_COMMAND_BYTES,
+  MAX_REPORTED_COMMAND_CHARS,
+  MAX_REPORTED_ERROR_BYTES,
+  MAX_REPORTED_ERROR_CHARS,
+  MAX_SET_TIMEOUT_MS,
+  MAX_VALIDATOR_TIMEOUT_MS
+} from "./constants.js";
 import { redactErrorMessage, redactInlineSecrets } from "./redaction.js";
 
 export interface ExternalEpubCheckResult {
@@ -17,51 +40,23 @@ export interface ExternalEpubCheckResult {
   error?: string;
 }
 
-const MAX_CAPTURED_OUTPUT_CHARS = 16 * 1024;
-const MAX_CAPTURED_OUTPUT_BYTES = 16 * 1024;
-const MAX_PROCESS_BUFFER_BYTES = 1024 * 1024;
-const MAX_REPORTED_COMMAND_CHARS = 1024;
-const MAX_REPORTED_COMMAND_BYTES = 1024;
-const MAX_REPORTED_ARG_CHARS = 1024;
-const MAX_REPORTED_ARG_BYTES = 1024;
-const MAX_REPORTED_ARGS = 64;
-const MAX_REPORTED_ERROR_CHARS = 4000;
-const MAX_REPORTED_ERROR_BYTES = 4000;
-const MAX_EPUB_PATH_CHARS = 4096;
-const MAX_EPUB_PATH_BYTES = 4096;
-const MAX_EXEC_ARGS = 64;
-const MAX_EXEC_ARG_TEMPLATE_CHARS = 4096;
-const MAX_EXEC_ARG_TEMPLATE_BYTES = 4096;
-const MAX_EXEC_ARG_CHARS = 8192;
-const MAX_EXEC_ARGV_BYTES = 256 * 1024;
 const EXEC_ARG_CONTROL_CHARS = /[\u0000-\u001f\u007f]/u;
 const REPORTED_FIELD_CONTROL_CHARS_GLOBAL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu;
 const REPORTED_ERROR_CONTROL_CHARS_GLOBAL = /[\u0000-\u001f\u007f]/gu;
-const MAX_VALIDATOR_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_SET_TIMEOUT_MS = 2_147_483_647;
-const DEFAULT_VALIDATOR_PATH = "/usr/local/bin:/usr/bin:/bin";
-const DEFAULT_VALIDATOR_CWD = "/";
 const EXTERNAL_VALIDATOR_CONFIG_FIELDS = new Set<keyof AppConfig>([
-  "dataDir",
   "lockTimeoutMs",
   "lockRetryMs",
   "lockStaleMs",
   "logLevel",
   "operationTimeoutMs",
-  "reviewMaxRetries",
   "jobRetentionMs",
   "maxConcurrentJobs",
   "maxJobs",
   "stdioMaxLineLength",
-  "agentProvider",
-  "openaiBaseUrl",
-  "openaiApiKey",
-  "openaiModel",
-  "openaiTimeoutMs",
-  "openaiMaxRetries",
-  "openaiRetryBaseMs",
   "epubCheckCommand",
-  "epubCheckArgs"
+  "epubCheckArgs",
+  "storageRoot",
+  "epubLanguage"
 ]);
 const encoder = new TextEncoder();
 
@@ -101,7 +96,7 @@ export async function runExternalEpubCheck(epubPath: string, config: AppConfig, 
         encoding: "utf8",
         timeout: boundedTimeoutMs,
         maxBuffer: MAX_PROCESS_BUFFER_BYTES,
-        cwd: DEFAULT_VALIDATOR_CWD,
+        cwd: process.cwd() || DEFAULT_VALIDATOR_CWD,
         env: externalValidatorEnv()
       },
       (error, stdout, stderr) => {
@@ -337,7 +332,7 @@ function timeoutMsForTimer(ms: number): number {
 
 function externalValidatorEnv(): Record<string, string> {
   return {
-    PATH: DEFAULT_VALIDATOR_PATH
+    PATH: process.env.PATH || DEFAULT_VALIDATOR_PATH
   };
 }
 

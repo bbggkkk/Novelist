@@ -1,6 +1,24 @@
 import type { VolumeState } from "./types.js";
 import { redactErrorMessage, redactInlineSecrets } from "./redaction.js";
 import { assertBoundedNonEmptyString, assertObject, assertSafeId } from "./validation.js";
+import {
+  EPUB_LANGUAGE,
+  MAX_EPUB_ARCHIVE_BYTES,
+  MAX_EPUB_ENTRIES,
+  MAX_EPUB_ENTRY_NAME_BYTES,
+  MAX_EPUB_ISSUE_BYTES,
+  MAX_EPUB_ISSUE_CHARS,
+  MAX_EPUB_MARKDOWN_BYTES,
+  MAX_EPUB_MARKDOWN_CHARS,
+  MAX_EPUB_METADATA_CHARS,
+  MAX_EPUB_PARSED_ZIP_ENTRIES,
+  MAX_EPUB_REPORTED_ENTRIES,
+  MAX_EPUB_REPORTED_ENTRY_BYTES,
+  MAX_EPUB_REPORTED_ENTRY_CHARS,
+  MAX_EPUB_REPORTED_ISSUES,
+  ZIP_SUPPORTED_GENERAL_PURPOSE_FLAGS,
+  ZIP_UTF8_NAME_FLAG
+} from "./constants.js";
 
 interface ZipEntry {
   path: string;
@@ -25,21 +43,6 @@ interface ParsedZipEntry extends ZipEntry {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
-const MAX_EPUB_MARKDOWN_CHARS = 16 * 1024 * 1024;
-const MAX_EPUB_MARKDOWN_BYTES = 16 * 1024 * 1024;
-export const MAX_EPUB_ARCHIVE_BYTES = 32 * 1024 * 1024;
-const MAX_EPUB_ENTRIES = 256;
-const MAX_EPUB_PARSED_ZIP_ENTRIES = 4096;
-const MAX_EPUB_ENTRY_NAME_BYTES = 1024;
-const MAX_EPUB_REPORTED_ISSUES = 50;
-const MAX_EPUB_REPORTED_ENTRIES = 256;
-const MAX_EPUB_ISSUE_CHARS = 300;
-const MAX_EPUB_ISSUE_BYTES = 300;
-const MAX_EPUB_REPORTED_ENTRY_CHARS = 200;
-const MAX_EPUB_REPORTED_ENTRY_BYTES = 200;
-const MAX_EPUB_METADATA_CHARS = 512;
-const ZIP_UTF8_NAME_FLAG = 0x0800;
-const ZIP_SUPPORTED_GENERAL_PURPOSE_FLAGS = ZIP_UTF8_NAME_FLAG;
 const EPUB_REPORTED_FIELD_CONTROL_CHARS_GLOBAL = /[\u0000-\u001f\u007f]/gu;
 
 export function buildEpubArchive(state: VolumeState, markdown: string): Uint8Array {
@@ -213,9 +216,9 @@ function snapshotEpubArchive(value: Uint8Array): Uint8Array | undefined {
 
 function validateEpubStateMetadata(state: VolumeState): EpubStateMetadata {
   const value = assertObject(state, "EPUB state");
-  const status = assertBoundedNonEmptyString(value.status, "EPUB state.status", MAX_EPUB_METADATA_CHARS);
-  if (status !== "complete") {
-    throw new Error("EPUB state.status must be complete.");
+  const phase = assertBoundedNonEmptyString(value.phase, "EPUB state.phase", MAX_EPUB_METADATA_CHARS);
+  if (phase !== "epub") {
+    throw new Error("EPUB state.phase must be epub.");
   }
   const updatedAt = assertBoundedNonEmptyString(value.updatedAt, "EPUB state.updatedAt", MAX_EPUB_METADATA_CHARS);
   if (!isCanonicalUtcTimestamp(updatedAt)) {
@@ -250,7 +253,7 @@ function packageOpf(state: EpubStateMetadata): string {
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">${escapeXml(identifier)}</dc:identifier>
     <dc:title>${escapeXml(state.volumeTitle)}</dc:title>
-    <dc:language>ko</dc:language>
+    <dc:language>${EPUB_LANGUAGE}</dc:language>
     <meta property="dcterms:modified">${new Date(state.updatedAt).toISOString().replace(/\.\d{3}Z$/, "Z")}</meta>
   </metadata>
   <manifest>
@@ -267,7 +270,7 @@ function packageOpf(state: EpubStateMetadata): string {
 function navXhtml(state: EpubStateMetadata): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="ko">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${EPUB_LANGUAGE}">
   <head><title>${escapeXml(state.volumeTitle)}</title></head>
   <body>
     <nav epub:type="toc" id="toc">
@@ -299,7 +302,7 @@ function markdownToXhtml(title: string, markdown: string): string {
     .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="ko">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="${EPUB_LANGUAGE}">
   <head>
     <title>${escapeXml(title)}</title>
     <meta charset="UTF-8"/>

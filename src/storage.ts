@@ -1,77 +1,59 @@
 import { access, lstat, mkdir, open, opendir, realpath, rename, rm, rmdir, stat, unlink, utimes } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { CURRENT_STATE_SCHEMA_VERSION, type VolumeState } from "./types.js";
+import { type VolumeState } from "./types.js";
+import { CURRENT_STATE_SCHEMA_VERSION } from "./constants.js";
 import { assertObject, assertSafeId } from "./validation.js";
 import type { AppConfig } from "./config.js";
 import { loadConfig } from "./config.js";
 import { validateVolumeState } from "./stateValidation.js";
 import { redactErrorMessage, redactInlineSecrets } from "./redaction.js";
-import { MAX_EPUB_ARCHIVE_BYTES, validateEpubArchive } from "./epub.js";
+import {
+  MAX_EPUB_ARCHIVE_BYTES,
+  MAX_JSON_FILE_BYTES,
+  MAX_MARKDOWN_FILE_BYTES,
+  MAX_WORLD_FILE_BYTES,
+  MAX_COLLECTED_VOLUME_MARKDOWN_CHARS,
+  MAX_COLLECTED_VOLUME_MARKDOWN_BYTES,
+  MAX_ATOMIC_WRITE_BYTES,
+  MAX_LOCK_OWNER_FILE_BYTES,
+  MAX_LOCK_OWNER_TOKEN_CHARS,
+  MAX_SAFE_ID_BYTES,
+  MAX_STORAGE_ROOT_CHARS,
+  MAX_STORAGE_ROOT_BYTES,
+  MAX_QUARANTINE_CLEANUP_FAILURE_ITEMS,
+  MAX_MARKDOWN_FRONTMATTER_CHARS,
+  MAX_MARKDOWN_FRONTMATTER_BYTES,
+  MAX_MARKDOWN_FRONTMATTER_FIELDS,
+  MAX_MARKDOWN_FRONTMATTER_KEY_CHARS,
+  MAX_MARKDOWN_FRONTMATTER_KEY_BYTES,
+  MAX_JSON_VALUE_DEPTH,
+  MAX_JSON_OBJECT_FIELDS,
+  MAX_JSON_OBJECT_KEY_CHARS,
+  MAX_JSON_OBJECT_KEY_BYTES,
+  MAX_JSON_STRING_CHARS,
+  MAX_JSON_STRING_BYTES,
+  MAX_JSON_ARRAY_ITEMS,
+  MAX_JSON_TOTAL_NODES,
+  MAX_DIRECTORY_SCAN_ENTRIES,
+  MAX_DIRECTORY_ENTRY_NAME_CHARS,
+  MAX_DIRECTORY_ENTRY_NAME_BYTES,
+  MAX_SAFE_CHILD_DIRECTORIES,
+  MAX_STORAGE_ERROR_CHARS,
+  MAX_STORAGE_ERROR_BYTES,
+  MAX_BEAT_PATH_INDEX,
+  MAX_SET_TIMEOUT_MS,
+  MAX_STORAGE_DURATION_MS,
+  MAX_STORAGE_JOB_SNAPSHOTS,
+  MAX_STORAGE_PATH_CHARS,
+  MAX_STORAGE_PATH_BYTES,
+  MAX_SLUG_INPUT_CHARS
+} from "./constants.js";
+import { validateEpubArchive } from "./epub.js";
 import { assertNoDuplicateJsonObjectKeys } from "./jsonPreflight.js";
 
-const MAX_JSON_FILE_BYTES = 2 * 1024 * 1024;
-const MAX_MARKDOWN_FILE_BYTES = 10 * 1024 * 1024;
-const MAX_WORLD_FILE_BYTES = 10 * 1024 * 1024;
-const MAX_COLLECTED_VOLUME_MARKDOWN_CHARS = 16 * 1024 * 1024;
-const MAX_COLLECTED_VOLUME_MARKDOWN_BYTES = 16 * 1024 * 1024;
-const MAX_ATOMIC_WRITE_BYTES = 64 * 1024 * 1024;
-const MAX_LOCK_OWNER_FILE_BYTES = 64 * 1024;
-const MAX_LOCK_OWNER_TOKEN_CHARS = 256;
-const MAX_SAFE_ID_BYTES = 120;
-const MAX_STORAGE_ROOT_CHARS = 4096;
-const MAX_STORAGE_ROOT_BYTES = 4096;
-const MAX_QUARANTINE_CLEANUP_FAILURE_ITEMS = 100;
-const MAX_MARKDOWN_FRONTMATTER_CHARS = 64 * 1024;
-const MAX_MARKDOWN_FRONTMATTER_BYTES = 64 * 1024;
-const MAX_MARKDOWN_FRONTMATTER_FIELDS = 20;
-const MAX_MARKDOWN_FRONTMATTER_KEY_CHARS = 256;
-const MAX_MARKDOWN_FRONTMATTER_KEY_BYTES = 512;
-const MAX_JSON_VALUE_DEPTH = 64;
-const MAX_JSON_OBJECT_FIELDS = 1000;
-const MAX_JSON_OBJECT_KEY_CHARS = 1024;
-const MAX_JSON_OBJECT_KEY_BYTES = 2048;
-const MAX_JSON_STRING_CHARS = 1024 * 1024;
-const MAX_JSON_STRING_BYTES = 1024 * 1024;
-const MAX_JSON_ARRAY_ITEMS = 10000;
-const MAX_JSON_TOTAL_NODES = 100000;
-const MAX_DIRECTORY_SCAN_ENTRIES = 10000;
-const MAX_DIRECTORY_ENTRY_NAME_CHARS = 1024;
-const MAX_DIRECTORY_ENTRY_NAME_BYTES = 1024;
-const MAX_SAFE_CHILD_DIRECTORIES = 1000;
-const MAX_STORAGE_ERROR_CHARS = 4000;
-const MAX_STORAGE_ERROR_BYTES = 4000;
-const MAX_BEAT_PATH_INDEX = 5000;
-const MAX_SET_TIMEOUT_MS = 2_147_483_647;
-const MAX_STORAGE_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_STORAGE_JOB_SNAPSHOTS = 100000;
-const MAX_STORAGE_PATH_CHARS = 8192;
-const MAX_STORAGE_PATH_BYTES = 8192;
-const MAX_SLUG_INPUT_CHARS = 16 * 1024;
 const STORAGE_ERROR_CONTROL_CHARS_GLOBAL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu;
 const MARKDOWN_TEXT_CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u;
-const STORAGE_CONFIG_FIELDS = new Set<keyof AppConfig>([
-  "dataDir",
-  "lockTimeoutMs",
-  "lockRetryMs",
-  "lockStaleMs",
-  "logLevel",
-  "operationTimeoutMs",
-  "reviewMaxRetries",
-  "jobRetentionMs",
-  "maxConcurrentJobs",
-  "maxJobs",
-  "stdioMaxLineLength",
-  "agentProvider",
-  "openaiBaseUrl",
-  "openaiApiKey",
-  "openaiModel",
-  "openaiTimeoutMs",
-  "openaiMaxRetries",
-  "openaiRetryBaseMs",
-  "epubCheckCommand",
-  "epubCheckArgs"
-]);
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -114,13 +96,13 @@ export class NovelStorage {
   private readonly lockStaleMs: number;
   private readonly maxJobSnapshots: number;
 
-  constructor(rootOrConfig: string | AppConfig = loadConfig()) {
-    const config = normalizeStorageConfig(rootOrConfig);
-    this.root = storageRoot(config.dataDir);
-    this.lockTimeoutMs = assertIntegerInRange(config.lockTimeoutMs, "NovelStorage.lockTimeoutMs", 1, MAX_STORAGE_DURATION_MS);
-    this.lockRetryMs = assertIntegerInRange(config.lockRetryMs, "NovelStorage.lockRetryMs", 1, MAX_STORAGE_DURATION_MS);
-    this.lockStaleMs = assertIntegerInRange(config.lockStaleMs, "NovelStorage.lockStaleMs", 1, MAX_STORAGE_DURATION_MS);
-    this.maxJobSnapshots = assertIntegerInRange(config.maxJobs, "NovelStorage.maxJobs", 1, MAX_STORAGE_JOB_SNAPSHOTS);
+  constructor(config: AppConfig = loadConfig()) {
+    const safeConfig = normalizeStorageConfig(config);
+    this.root = assertStorageRoot(safeConfig.storageRoot);
+    this.lockTimeoutMs = assertIntegerInRange(safeConfig.lockTimeoutMs, "NovelStorage.lockTimeoutMs", 1, MAX_STORAGE_DURATION_MS);
+    this.lockRetryMs = assertIntegerInRange(safeConfig.lockRetryMs, "NovelStorage.lockRetryMs", 1, MAX_STORAGE_DURATION_MS);
+    this.lockStaleMs = assertIntegerInRange(safeConfig.lockStaleMs, "NovelStorage.lockStaleMs", 1, MAX_STORAGE_DURATION_MS);
+    this.maxJobSnapshots = assertIntegerInRange(safeConfig.maxJobs, "NovelStorage.maxJobs", 1, MAX_STORAGE_JOB_SNAPSHOTS);
   }
 
   franchiseDir(franchiseId: string): string {
@@ -250,12 +232,33 @@ export class NovelStorage {
   }
 
   async writeWorld(state: VolumeState, worldText: string): Promise<void> {
+    await this.writeScopedWorld(state, "franchise", worldText);
+  }
+
+  async writeScopedWorld(state: VolumeState, scope: "franchise" | "work" | "volume", worldText: string): Promise<void> {
     const validated = validateVolumeState(state);
-    await this.writeMarkdown(join(this.franchiseDir(validated.franchiseId), "world.md"), {
+    const frontmatter: Record<string, unknown> = {
       franchiseId: validated.franchiseId,
       franchiseName: validated.franchiseName,
+      scope,
       updatedAt: new Date().toISOString()
-    }, worldText);
+    };
+    if (scope === "work" || scope === "volume") frontmatter.workId = validated.workId;
+    if (scope === "volume") frontmatter.volumeId = validated.volumeId;
+    await this.writeMarkdown(this.scopedWorldPath(validated, scope), frontmatter, worldText);
+  }
+
+  async writeScopedSetting(state: VolumeState, scope: "franchise" | "work" | "volume", settingText: string): Promise<void> {
+    const validated = validateVolumeState(state);
+    const frontmatter: Record<string, unknown> = {
+      franchiseId: validated.franchiseId,
+      franchiseName: validated.franchiseName,
+      scope,
+      updatedAt: new Date().toISOString()
+    };
+    if (scope === "work" || scope === "volume") frontmatter.workId = validated.workId;
+    if (scope === "volume") frontmatter.volumeId = validated.volumeId;
+    await this.writeMarkdown(this.scopedSettingPath(validated, scope), frontmatter, settingText);
   }
 
   async deleteWorld(state: VolumeState): Promise<void> {
@@ -265,12 +268,27 @@ export class NovelStorage {
   }
 
   async readWorldFile(state: VolumeState): Promise<string | undefined> {
-    const { franchiseId } = this.volumeIdentity(state);
-    const path = join(this.franchiseDir(franchiseId), "world.md");
+    const path = this.scopedWorldPath(validateVolumeState(state), "franchise");
     if (!(await exists(path))) {
       return undefined;
     }
     return this.readBoundedText(path, MAX_WORLD_FILE_BYTES, "World markdown file");
+  }
+
+  async readScopedWorldFile(state: VolumeState, scope: "franchise" | "work" | "volume"): Promise<string | undefined> {
+    const path = this.scopedWorldPath(validateVolumeState(state), scope);
+    if (!(await exists(path))) {
+      return undefined;
+    }
+    return this.readBoundedText(path, MAX_WORLD_FILE_BYTES, `${scope} world markdown file`);
+  }
+
+  async readScopedSettingFile(state: VolumeState, scope: "franchise" | "work" | "volume"): Promise<string | undefined> {
+    const path = this.scopedSettingPath(validateVolumeState(state), scope);
+    if (!(await exists(path))) {
+      return undefined;
+    }
+    return this.readBoundedText(path, MAX_MARKDOWN_FILE_BYTES, `${scope} setting markdown file`);
   }
 
   async writeWorldFile(state: VolumeState, content: string): Promise<void> {
@@ -280,9 +298,30 @@ export class NovelStorage {
   }
 
   async readWorld(state: VolumeState): Promise<string> {
-    const { franchiseId } = this.volumeIdentity(state);
-    const path = join(this.franchiseDir(franchiseId), "world.md");
+    const path = this.scopedWorldPath(validateVolumeState(state), "franchise");
     return (await exists(path)) ? this.readBoundedText(path, MAX_WORLD_FILE_BYTES, "World markdown file") : "";
+  }
+
+  scopedWorldPath(state: VolumeState, scope: "franchise" | "work" | "volume"): string {
+    const validated = validateVolumeState(state);
+    if (scope === "franchise") {
+      return join(this.franchiseDir(validated.franchiseId), "world.md");
+    }
+    if (scope === "work") {
+      return join(this.workDir(validated.franchiseId, validated.workId), "world.md");
+    }
+    return join(this.volumeDir(validated.franchiseId, validated.workId, validated.volumeId), "world.md");
+  }
+
+  scopedSettingPath(state: VolumeState, scope: "franchise" | "work" | "volume"): string {
+    const validated = validateVolumeState(state);
+    if (scope === "franchise") {
+      return join(this.franchiseDir(validated.franchiseId), "setting.md");
+    }
+    if (scope === "work") {
+      return join(this.workDir(validated.franchiseId, validated.workId), "setting.md");
+    }
+    return join(this.volumeDir(validated.franchiseId, validated.workId, validated.volumeId), "setting.md");
   }
 
   async writeWork(state: VolumeState, content: string): Promise<void> {
@@ -392,6 +431,31 @@ export class NovelStorage {
     return path;
   }
 
+  async writeBeatDraft(state: VolumeState, chapterNo: number, beatNo: number, content: string): Promise<string> {
+    const validated = validateVolumeState(state);
+    assertDeclaredBeat(validated, chapterNo, beatNo);
+    const path = this.beatDraftPath(validated, chapterNo, beatNo);
+    const markdown = this.markdownContent(path, {
+      franchiseId: validated.franchiseId,
+      workId: validated.workId,
+      volumeId: validated.volumeId,
+      chapterNo,
+      beatNo
+    }, content);
+    await this.writeFileAtomic(path, markdown);
+    return path;
+  }
+
+  async readBeatDraftFile(state: VolumeState, chapterNo: number, beatNo: number): Promise<string | undefined> {
+    const validated = validateVolumeState(state);
+    assertDeclaredBeat(validated, chapterNo, beatNo);
+    const path = this.beatDraftPath(validated, chapterNo, beatNo);
+    if (!(await exists(path))) {
+      return undefined;
+    }
+    return this.readBoundedText(path, MAX_MARKDOWN_FILE_BYTES, "Beat draft markdown file");
+  }
+
   async deleteBeat(state: VolumeState, chapterNo: number, beatNo: number): Promise<void> {
     const validated = validateVolumeState(state);
     assertDeclaredBeat(validated, chapterNo, beatNo);
@@ -415,10 +479,15 @@ export class NovelStorage {
     );
   }
 
+  beatDraftPath(state: VolumeState, chapterNo: number, beatNo: number): string {
+    const finalPath = this.beatPath(state, chapterNo, beatNo);
+    return finalPath.replace(/\.md$/u, ".draft.md");
+  }
+
   async collectVolumeMarkdown(state: VolumeState): Promise<string> {
     const validated = validateVolumeState(state);
-    if (validated.status !== "complete") {
-      throw new Error("Volume markdown can only be collected for a complete volume.");
+    if (validated.phase !== "epub") {
+      throw new Error("Volume markdown can only be collected during the EPUB phase.");
     }
     const parts: string[] = [];
     let collectedLength = 0;
@@ -455,7 +524,7 @@ export class NovelStorage {
 
   async writeEpub(state: VolumeState, content: Uint8Array): Promise<string> {
     const object = this.volumeData(state);
-    if (object.status !== "complete") {
+    if (object.phase !== "complete") {
       throw new Error("EPUB can only be written for a complete volume.");
     }
     const validated = validateVolumeState(state);
@@ -488,8 +557,8 @@ export class NovelStorage {
 
   async writeEpubCandidate(state: VolumeState, content: Uint8Array): Promise<string> {
     const object = this.volumeData(state);
-    if (object.status !== "complete") {
-      throw new Error("EPUB candidate can only be written for a complete volume.");
+    if (object.phase !== "epub") {
+      throw new Error("EPUB candidate can only be written during the EPUB phase.");
     }
     const validated = validateVolumeState(state);
     const { franchiseId, workId, volumeId } = this.volumeIdentity(validated);
@@ -517,8 +586,8 @@ export class NovelStorage {
       throw new Error(`EPUB candidate archive is too large: ${candidateStats.size} bytes, maximum is ${MAX_EPUB_ARCHIVE_BYTES} bytes.`);
     }
     this.assertEpubCandidateForVolume(state, candidatePath);
-    if (object.status !== "complete") {
-      throw new Error("EPUB candidate can only be promoted for a complete volume.");
+    if (object.phase !== "epub") {
+      throw new Error("EPUB candidate can only be promoted during the EPUB phase.");
     }
     const validated = validateVolumeState(state);
     const validation = validateEpubArchive(await this.readBoundedBytes(candidatePath, MAX_EPUB_ARCHIVE_BYTES, "EPUB candidate archive"));
@@ -1543,31 +1612,11 @@ function timeoutMsForTimer(ms: number): number {
   return Math.min(ms, MAX_SET_TIMEOUT_MS);
 }
 
-function storageRoot(dataDir: string | undefined): string {
-  if (dataDir === undefined) {
-    const root = resolve(join(process.cwd(), "data"));
-    if (dirname(root) === root) {
-      throw new Error("Storage root must not be the filesystem root.");
-    }
-    return root;
-  }
-  const trimmed = dataDir.trim();
-  if (!trimmed) {
-    throw new Error("Storage root must be a non-empty absolute path.");
-  }
-  if (trimmed.length > MAX_STORAGE_ROOT_CHARS) {
-    throw new Error(`Storage root must be at most ${MAX_STORAGE_ROOT_CHARS} characters.`);
-  }
-  if (utf8ByteLengthUpTo(trimmed, MAX_STORAGE_ROOT_BYTES) > MAX_STORAGE_ROOT_BYTES) {
-    throw new Error(`Storage root must be at most ${MAX_STORAGE_ROOT_BYTES} UTF-8 bytes.`);
-  }
-  if (/[\u0000-\u001f\u007f]/u.test(trimmed)) {
-    throw new Error("Storage root must not contain control characters.");
-  }
-  if (!isAbsolute(trimmed)) {
+function assertStorageRoot(value: string): string {
+  if (!isAbsolute(value)) {
     throw new Error("Storage root must be an absolute path.");
   }
-  const root = resolve(trimmed);
+  const root = resolve(value);
   if (dirname(root) === root) {
     throw new Error("Storage root must not be the filesystem root.");
   }
@@ -1614,24 +1663,18 @@ function stateWithStorageMetadata(value: unknown): unknown {
 }
 
 function normalizeStorageConfig(value: unknown): AppConfig {
-  if (typeof value === "string") {
-    return { ...loadConfig(), dataDir: value };
-  }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("NovelStorage config must be a string path or config object.");
+    throw new Error("NovelStorage config must be an object.");
   }
-  validateStorageConfigObject(value);
-  const dataDir = readOptionalStorageConfigField(value, "dataDir");
-  if (dataDir !== undefined && typeof dataDir !== "string") {
-    throw new Error("NovelStorage.dataDir must be a string when provided.");
-  }
+  validateStorageConfigObject(value as object);
   return {
     ...loadConfig(),
-    dataDir,
-    lockTimeoutMs: readRequiredStorageConfigField(value, "lockTimeoutMs") as number,
-    lockRetryMs: readRequiredStorageConfigField(value, "lockRetryMs") as number,
-    lockStaleMs: readRequiredStorageConfigField(value, "lockStaleMs") as number,
-    maxJobs: readRequiredStorageConfigField(value, "maxJobs") as number
+    lockTimeoutMs: readRequiredStorageConfigField(value as object, "lockTimeoutMs") as number,
+    lockRetryMs: readRequiredStorageConfigField(value as object, "lockRetryMs") as number,
+    lockStaleMs: readRequiredStorageConfigField(value as object, "lockStaleMs") as number,
+    maxJobs: readRequiredStorageConfigField(value as object, "maxJobs") as number,
+    storageRoot: readRequiredStorageConfigField(value as object, "storageRoot") as string,
+    epubLanguage: readRequiredStorageConfigField(value as object, "epubLanguage") as string
   };
 }
 
@@ -1643,9 +1686,6 @@ function validateStorageConfigObject(value: object): void {
   for (const key of safeOwnKeys(value, "NovelStorage config")) {
     if (typeof key !== "string") {
       throw new Error("NovelStorage config must not contain symbol properties.");
-    }
-    if (!STORAGE_CONFIG_FIELDS.has(key as keyof AppConfig)) {
-      throw new Error(`NovelStorage.${key} is not a supported config field.`);
     }
     const descriptor = safeGetOwnPropertyDescriptor(value, key, "NovelStorage config");
     if (!descriptor?.enumerable || !("value" in descriptor)) {

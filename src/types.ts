@@ -1,23 +1,38 @@
-export type PipelineStatus =
-  | "pending_user_confirmation"
-  | "planning"
-  | "drafting"
-  | "reviewing"
-  | "blocked"
+export type PipelinePhase =
+  | "franchise_world"
+  | "franchise_setting"
+  | "work_world"
+  | "work_setting"
+  | "volume_world"
+  | "volume_setting"
+  | "volume_outline"
+  | "writing"
+  | "epub"
   | "complete";
 
-export const CURRENT_STATE_SCHEMA_VERSION = 1;
+export type PipelineFlowStatus = "needs_input" | "pending_finalization" | "ready" | "complete";
 
-export type AgentRole =
-  | "planner"
-  | "worldbuilder"
-  | "continuity_otaku"
-  | "writer"
-  | "editor"
-  | "proofreader"
-  | "epub_builder";
+export type WorldScope = "franchise" | "work" | "volume";
+export type SettingScope = "franchise" | "work" | "volume";
 
-export interface NewProjectInput {
+export interface ConsistencyIssue {
+  scope: string;
+  description: string;
+}
+
+export interface ConsistencyReport {
+  ok: boolean;
+  checkedAgainst: string[];
+  issues: ConsistencyIssue[];
+}
+
+export interface LastConsistencyFailure {
+  phase: PipelinePhase;
+  submittedAt: string;
+  report: ConsistencyReport;
+}
+
+export interface StartInput {
   franchiseName: string;
   workRequest: string;
   volumeRequest?: string;
@@ -26,25 +41,11 @@ export interface NewProjectInput {
   targetLength?: string;
 }
 
-export interface ConfirmInput {
-  confirmationId: string;
-  approved: boolean;
-  revisionInstruction?: string;
-}
-
-export interface ContinueInput {
+export interface LocatorInput {
   franchiseId?: string;
   workId?: string;
   volumeId?: string;
   current?: boolean;
-}
-
-export interface ReviseInput {
-  franchiseId: string;
-  workId: string;
-  volumeId: string;
-  target: string;
-  instruction: string;
 }
 
 export interface BuildEpubInput {
@@ -53,14 +54,15 @@ export interface BuildEpubInput {
   volumeId: string;
 }
 
-export interface Confirmation {
-  id: string;
-  kind: "initial_outline" | "conflict_resolution" | "revision";
-  message: string;
-  createdAt: string;
-  resolvedAt?: string;
-  approved?: boolean;
-  revisionInstruction?: string;
+export interface OutlineBeatInput {
+  title: string;
+  targetWords: number;
+}
+
+export interface OutlineChapterInput {
+  title: string;
+  targetWords?: number;
+  beats: OutlineBeatInput[];
 }
 
 export interface BeatState {
@@ -68,9 +70,7 @@ export interface BeatState {
   beatNo: number;
   title: string;
   targetWords: number;
-  status: "pending" | "drafted" | "complete" | "needs_revision";
-  retryCount: number;
-  lastFeedback?: string;
+  status: "pending" | "complete";
 }
 
 export interface ChapterState {
@@ -78,14 +78,6 @@ export interface ChapterState {
   title: string;
   targetWords: number;
   beats: BeatState[];
-}
-
-export interface ConflictRecord {
-  id: string;
-  scope: string;
-  description: string;
-  severity: "info" | "warning" | "blocking";
-  resolved: boolean;
 }
 
 export interface VolumeState {
@@ -96,44 +88,18 @@ export interface VolumeState {
   workTitle: string;
   volumeId: string;
   volumeTitle: string;
-  status: PipelineStatus;
+  phase: PipelinePhase;
+  flowStatus: PipelineFlowStatus;
+  lastConsistencyFailure?: LastConsistencyFailure;
   currentChapterNo: number;
   currentBeatNo: number;
-  confirmations: Confirmation[];
-  conflicts: ConflictRecord[];
   chapters: ChapterState[];
   createdAt: string;
   updatedAt: string;
 }
 
-export interface AgentResult {
-  text: string;
-  issues: string[];
-  conflict?: ConflictRecord;
-}
-
-export interface AgentContext {
-  state: VolumeState;
-  input?: unknown;
-  previousBeatText?: string;
-  currentBeat?: BeatState;
-  feedback?: string[];
-}
-
-export interface NovelAgents {
-  planInitial(input: NewProjectInput): Promise<AgentResult>;
-  buildWorld(input: NewProjectInput, approvedOutline: string): Promise<AgentResult>;
-  planSkeleton(state: VolumeState, input: NewProjectInput): Promise<AgentResult>;
-  writeBeat(context: AgentContext): Promise<AgentResult>;
-  editBeat(context: AgentContext, draft: string): Promise<AgentResult>;
-  proofreadBeat(context: AgentContext, edited: string): Promise<AgentResult>;
-  checkContinuity(context: AgentContext, text: string): Promise<AgentResult>;
-  editJoinedBeats(context: AgentContext, text: string): Promise<AgentResult>;
-  buildEpub(context: AgentContext, markdown: string): Promise<AgentResult>;
-}
-
 export interface ToolResult {
-  status: PipelineStatus | "ok";
+  status: PipelineFlowStatus | "ok";
   message: string;
   data?: unknown;
 }

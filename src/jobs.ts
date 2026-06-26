@@ -8,17 +8,28 @@ import {
   assertBoundedNonEmptyString,
   assertBoundedNonEmptySingleLineString,
   assertObject,
-  assertRevisionTargetString,
   assertSafeId,
   assertShape,
-  asOptionalBoundedSingleLineString,
-  asOptionalBoundedString
+  asOptionalBoundedSingleLineString
 } from "./validation.js";
 import { validateToolResultShape } from "./toolResultValidation.js";
 import { redactErrorMessage, redactInlineSecrets } from "./redaction.js";
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
-export type AsyncToolName = "novel_new_project" | "novel_confirm" | "novel_continue" | "novel_revise" | "novel_build_epub";
+export type AsyncToolName =
+  | "novel_start"
+  | "novel_start_volume"
+  | "novel_next"
+  | "novel_submit_world"
+  | "novel_finalize_world"
+  | "novel_submit_setting"
+  | "novel_finalize_setting"
+  | "novel_submit_outline"
+  | "novel_finalize_outline"
+  | "novel_save_beat_draft"
+  | "novel_submit_beat"
+  | "novel_rewrite_beat"
+  | "novel_build_epub";
 
 export interface JobSnapshot {
   jobId: string;
@@ -295,7 +306,7 @@ export class JobManager {
     }
     const failed = failureCount + quarantineFailureCount;
     return jobToolResult({
-      status: failed > 0 ? "blocked" : "ok",
+      status: failed > 0 ? "needs_input" : "ok",
       message: failed > 0 ? "Job cleanup completed with deletion failures." : "Job cleanup complete.",
       data: jobData({
         deleted,
@@ -459,14 +470,30 @@ export class JobManager {
 
   private callPipeline(toolName: AsyncToolName, args: unknown, signal: ExecutionSignal): Promise<ToolResult> {
     switch (toolName) {
-      case "novel_new_project":
-        return this.pipeline.newProject(args as never, signal);
-      case "novel_confirm":
-        return this.pipeline.confirm(args as never, signal);
-      case "novel_continue":
-        return this.pipeline.continue(args as never, signal);
-      case "novel_revise":
-        return this.pipeline.revise(args as never, signal);
+      case "novel_start":
+        return this.pipeline.start(args as never, signal);
+      case "novel_start_volume":
+        return this.pipeline.startVolume(args as never, signal);
+      case "novel_next":
+        return this.pipeline.next(args as never, signal);
+      case "novel_submit_world":
+        return this.pipeline.submitWorld(args as never, signal);
+      case "novel_finalize_world":
+        return this.pipeline.finalizeWorld(args as never, signal);
+      case "novel_submit_setting":
+        return this.pipeline.submitSetting(args as never, signal);
+      case "novel_finalize_setting":
+        return this.pipeline.finalizeSetting(args as never, signal);
+      case "novel_submit_outline":
+        return this.pipeline.submitOutline(args as never, signal);
+      case "novel_finalize_outline":
+        return this.pipeline.finalizeOutline(args as never, signal);
+      case "novel_save_beat_draft":
+        return this.pipeline.saveBeatDraft(args as never, signal);
+      case "novel_submit_beat":
+        return this.pipeline.submitBeat(args as never, signal);
+      case "novel_rewrite_beat":
+        return this.pipeline.rewriteBeat(args as never, signal);
       case "novel_build_epub":
         return this.pipeline.buildEpub(args as never, signal);
     }
@@ -665,7 +692,7 @@ function parseJobStartInput(input: unknown): { toolName: AsyncToolName; args: un
     throw new Error("novel_job_start.toolName must be a string.");
   }
   const asyncToolName = assertAsyncToolName(toolName, "novel_job_start.toolName");
-  if (object.args === undefined && toolName !== "novel_continue") {
+  if (object.args === undefined && toolName !== "novel_next" && toolName !== "novel_finalize_world" && toolName !== "novel_finalize_setting" && toolName !== "novel_finalize_outline") {
     throw new Error(`novel_job_start.args is required for ${toolName}.`);
   }
   return { toolName: asyncToolName, args: cloneJobArgs(validateAsyncToolArgs(asyncToolName, object.args, "novel_job_start.args")) };
@@ -677,10 +704,18 @@ function isJobStatus(value: string): value is JobStatus {
 
 function isAsyncToolName(value: string): value is AsyncToolName {
   return (
-    value === "novel_new_project" ||
-    value === "novel_confirm" ||
-    value === "novel_continue" ||
-    value === "novel_revise" ||
+    value === "novel_start" ||
+    value === "novel_start_volume" ||
+    value === "novel_next" ||
+    value === "novel_submit_world" ||
+    value === "novel_finalize_world" ||
+    value === "novel_submit_setting" ||
+    value === "novel_finalize_setting" ||
+    value === "novel_submit_outline" ||
+    value === "novel_finalize_outline" ||
+    value === "novel_save_beat_draft" ||
+    value === "novel_submit_beat" ||
+    value === "novel_rewrite_beat" ||
     value === "novel_build_epub"
   );
 }
@@ -1085,20 +1120,47 @@ function optionalArgsObject(value: unknown, label: string): Record<string, unkno
 function validateAsyncToolArgs(toolName: AsyncToolName, value: unknown, label: string): Record<string, unknown> {
   const args = optionalArgsObject(value, label);
   switch (toolName) {
-    case "novel_new_project":
-      return validateNewProjectArgs(args, label);
-    case "novel_confirm":
-      return validateConfirmArgs(args, label);
-    case "novel_continue":
-      return validateContinueArgs(args, label);
-    case "novel_revise":
-      return validateReviseArgs(args, label);
+    case "novel_start":
+      return validateStartArgs(args, label);
+    case "novel_start_volume":
+      return validateStartVolumeArgs(args, label);
+    case "novel_next":
+    case "novel_finalize_world":
+    case "novel_finalize_setting":
+    case "novel_finalize_outline":
+      return validateLocatorArgs(args, label);
+    case "novel_submit_world":
+    case "novel_submit_setting":
+    case "novel_submit_outline":
+    case "novel_save_beat_draft":
+    case "novel_submit_beat":
+    case "novel_rewrite_beat":
+      return args;
     case "novel_build_epub":
       return validateBuildEpubArgs(args, label);
   }
 }
 
-function validateNewProjectArgs(args: Record<string, unknown>, label: string): Record<string, unknown> {
+function validateStartVolumeArgs(args: Record<string, unknown>, label: string): Record<string, unknown> {
+  const object = assertShape(args, label, {
+    franchiseId: "string",
+    workId: "string",
+    volumeRequest: "string",
+    franchiseName: "optionalString",
+    workTitle: "optionalString"
+  });
+  const franchiseName = asOptionalBoundedSingleLineString(object.franchiseName, `${label}.franchiseName`, MAX_TITLE_INPUT_CHARS, MAX_TITLE_INPUT_BYTES);
+  const workTitle = asOptionalBoundedSingleLineString(object.workTitle, `${label}.workTitle`, MAX_TITLE_INPUT_CHARS, MAX_TITLE_INPUT_BYTES);
+  return {
+    franchiseId: assertSafeId(object.franchiseId, `${label}.franchiseId`),
+    workId: assertSafeId(object.workId, `${label}.workId`),
+    volumeRequest: assertBoundedNonEmptySingleLineString(object.volumeRequest, `${label}.volumeRequest`, MAX_TITLE_INPUT_CHARS, MAX_TITLE_INPUT_BYTES),
+    ...(franchiseName ? { franchiseName } : {}),
+    ...(workTitle ? { workTitle } : {})
+  };
+}
+
+function validateStartArgs(args: Record<string, unknown>, label: string): Record<string, unknown> {
   const object = assertShape(args, label, {
     franchiseName: "string",
     workRequest: "string",
@@ -1121,25 +1183,7 @@ function validateNewProjectArgs(args: Record<string, unknown>, label: string): R
   };
 }
 
-function validateConfirmArgs(args: Record<string, unknown>, label: string): Record<string, unknown> {
-  const object = assertShape(args, label, {
-    confirmationId: "string",
-    approved: "boolean",
-    revisionInstruction: "optionalString"
-  });
-  const approved = object.approved as boolean;
-  const revisionInstruction = asOptionalBoundedString(object.revisionInstruction, `${label}.revisionInstruction`, MAX_INSTRUCTION_INPUT_CHARS, MAX_INSTRUCTION_INPUT_BYTES);
-  if (!approved && revisionInstruction === undefined) {
-    throw new Error(`${label}.revisionInstruction is required when approved is false.`);
-  }
-  return {
-    confirmationId: assertSafeId(object.confirmationId, `${label}.confirmationId`),
-    approved,
-    ...(revisionInstruction ? { revisionInstruction } : {})
-  };
-}
-
-function validateContinueArgs(args: Record<string, unknown>, label: string): Record<string, unknown> {
+function validateLocatorArgs(args: Record<string, unknown>, label: string): Record<string, unknown> {
   const object = assertShape(args, label, {
     franchiseId: "optionalString",
     workId: "optionalString",
@@ -1161,23 +1205,6 @@ function validateContinueArgs(args: Record<string, unknown>, label: string): Rec
     ...(object.workId === undefined ? {} : { workId: assertSafeId(object.workId, `${label}.workId`) }),
     ...(object.volumeId === undefined ? {} : { volumeId: assertSafeId(object.volumeId, `${label}.volumeId`) }),
     ...(object.current === undefined ? {} : { current: object.current as boolean })
-  };
-}
-
-function validateReviseArgs(args: Record<string, unknown>, label: string): Record<string, unknown> {
-  const object = assertShape(args, label, {
-    franchiseId: "string",
-    workId: "string",
-    volumeId: "string",
-    target: "string",
-    instruction: "string"
-  });
-  return {
-    franchiseId: assertSafeId(object.franchiseId, `${label}.franchiseId`),
-    workId: assertSafeId(object.workId, `${label}.workId`),
-    volumeId: assertSafeId(object.volumeId, `${label}.volumeId`),
-    target: assertRevisionTargetString(object.target, `${label}.target`, MAX_OPTION_INPUT_CHARS, MAX_OPTION_INPUT_BYTES),
-    instruction: assertBoundedNonEmptyString(object.instruction, `${label}.instruction`, MAX_INSTRUCTION_INPUT_CHARS, MAX_INSTRUCTION_INPUT_BYTES)
   };
 }
 
@@ -1264,10 +1291,19 @@ function validateJobPipeline(value: unknown): void {
   if (!safeInstanceOf(value, NovelPipeline, "JobManager.pipeline")) {
     throw new Error("JobManager.pipeline must be a NovelPipeline instance.");
   }
-  validateMethodObject(value, "newProject", "JobManager.pipeline");
-  validateMethodObject(value, "confirm", "JobManager.pipeline");
-  validateMethodObject(value, "continue", "JobManager.pipeline");
-  validateMethodObject(value, "revise", "JobManager.pipeline");
+  validateMethodObject(value, "start", "JobManager.pipeline");
+  validateMethodObject(value, "startVolume", "JobManager.pipeline");
+  validateMethodObject(value, "next", "JobManager.pipeline");
+  validateMethodObject(value, "submitWorld", "JobManager.pipeline");
+  validateMethodObject(value, "finalizeWorld", "JobManager.pipeline");
+  validateMethodObject(value, "submitSetting", "JobManager.pipeline");
+  validateMethodObject(value, "finalizeSetting", "JobManager.pipeline");
+  validateMethodObject(value, "submitOutline", "JobManager.pipeline");
+  validateMethodObject(value, "finalizeOutline", "JobManager.pipeline");
+  validateMethodObject(value, "saveBeatDraft", "JobManager.pipeline");
+  validateMethodObject(value, "submitBeat", "JobManager.pipeline");
+  validateMethodObject(value, "rewriteBeat", "JobManager.pipeline");
+  validateMethodObject(value, "status", "JobManager.pipeline");
   validateMethodObject(value, "buildEpub", "JobManager.pipeline");
 }
 

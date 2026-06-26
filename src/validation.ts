@@ -149,16 +149,6 @@ export function assertBoundedNonEmptySingleLineString(value: unknown, label: str
   return text;
 }
 
-export function assertRevisionTargetString(value: unknown, label: string, maxChars: number, maxBytes?: number): string {
-  const text = assertBoundedNonEmptySingleLineString(value, label, maxChars, maxBytes);
-  if (!/^(?:chapter:[1-9]\d*,? *beat:[1-9]\d*|[1-9]\d*[-/][1-9]\d*)$/iu.test(text)) {
-    throw new ValidationError(
-      `Revision target must use chapter:<n>,beat:<n>, chapter:<n> beat:<n>, <chapter>-<beat>, or <chapter>/<beat>: ${text}`
-    );
-  }
-  return text;
-}
-
 export function assertSafeId(value: unknown, label: string): string {
   const safeLabel = validateValidationLabel(label);
   const id = assertNonEmptyString(value, safeLabel);

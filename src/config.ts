@@ -1,61 +1,48 @@
-import { dirname, isAbsolute, resolve } from "node:path";
+import { isAbsolute } from "node:path";
 import { assertNoDuplicateJsonObjectKeys } from "./jsonPreflight.js";
 import { redactErrorMessage } from "./redaction.js";
+import {
+  MAX_DURATION_MS,
+  MAX_CONCURRENT_JOBS,
+  MAX_TOTAL_JOBS,
+  MIN_STDIO_LINE_LENGTH,
+  MAX_STDIO_LINE_LENGTH,
+  MAX_EPUBCHECK_ARGS,
+  MAX_EPUBCHECK_ARG_LENGTH,
+  MAX_EPUBCHECK_ARG_BYTES,
+  MAX_EPUBCHECK_ARGS_RAW_LENGTH,
+  MAX_EPUBCHECK_ARGS_JSON_DEPTH,
+  MAX_NUMERIC_ENV_LENGTH,
+  MAX_NUMERIC_ENV_RAW_LENGTH,
+  MAX_ENUM_ENV_RAW_LENGTH,
+  MAX_ENV_NAME_LENGTH,
+  MAX_ENV_NAME_BYTES,
+  MAX_ENV_FIELDS,
+  RAW_TRIM_PADDING_LENGTH,
+  MAX_CONFIG_ERROR_CHARS,
+  MAX_CONFIG_ERROR_BYTES,
+  defaultStorageRoot,
+  EPUB_LANGUAGE
+} from "./constants.js";
 
 export interface AppConfig {
-  dataDir?: string;
   lockTimeoutMs: number;
   lockRetryMs: number;
   lockStaleMs: number;
   logLevel: LogLevel;
   operationTimeoutMs: number;
-  reviewMaxRetries: number;
   jobRetentionMs: number;
   maxConcurrentJobs: number;
   maxJobs: number;
   stdioMaxLineLength: number;
-  agentProvider: AgentProvider;
-  openaiBaseUrl: string;
-  openaiApiKey?: string;
-  openaiModel: string;
-  openaiTimeoutMs: number;
-  openaiMaxRetries: number;
-  openaiRetryBaseMs: number;
   epubCheckCommand?: string;
   epubCheckArgs: string[];
+  storageRoot: string;
+  epubLanguage: string;
 }
 
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
-export type AgentProvider = "stub" | "openai";
 
-const MAX_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_RETRY_COUNT = 20;
-const MAX_CONCURRENT_JOBS = 64;
-const MAX_TOTAL_JOBS = 100000;
-const MIN_STDIO_LINE_LENGTH = 256;
-const MAX_STDIO_LINE_LENGTH = 16 * 1024 * 1024;
-const MAX_OPENAI_API_KEY_LENGTH = 4096;
-const MAX_OPENAI_API_KEY_BYTES = 4096;
-const MAX_OPENAI_MODEL_LENGTH = 200;
-const MAX_OPENAI_MODEL_BYTES = 200;
-const MAX_OPENAI_BASE_URL_LENGTH = 2048;
-const MAX_OPENAI_BASE_URL_BYTES = 2048;
-const MAX_DATA_DIR_LENGTH = 4096;
-const MAX_DATA_DIR_BYTES = 4096;
-const MAX_EPUBCHECK_ARGS = 64;
-const MAX_EPUBCHECK_ARG_LENGTH = 4096;
-const MAX_EPUBCHECK_ARG_BYTES = 4096;
-const MAX_EPUBCHECK_ARGS_RAW_LENGTH = 300 * 1024;
-const MAX_EPUBCHECK_ARGS_JSON_DEPTH = 64;
-const MAX_NUMERIC_ENV_LENGTH = 32;
-const MAX_NUMERIC_ENV_RAW_LENGTH = 1024;
-const MAX_ENUM_ENV_RAW_LENGTH = 1024;
-const MAX_ENV_NAME_LENGTH = 256;
-const MAX_ENV_NAME_BYTES = 512;
-const MAX_ENV_FIELDS = 10000;
-const RAW_TRIM_PADDING_LENGTH = 1024;
-const MAX_CONFIG_ERROR_CHARS = 1000;
-const MAX_CONFIG_ERROR_BYTES = 1000;
 const CONFIG_ERROR_CONTROL_CHARS_GLOBAL = /[\u0000-\u001f\u007f]/gu;
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): AppConfig {
@@ -63,27 +50,42 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const epubCheckCommand = parseExecutableCommand(readEnv("NOVELIST_EPUBCHECK_COMMAND"), "NOVELIST_EPUBCHECK_COMMAND");
   const epubCheckArgs = parseEpubCheckArgs(epubCheckCommand, readEnv("NOVELIST_EPUBCHECK_ARGS"));
   return {
-    dataDir: parseDataDir(readEnv("NOVELIST_DATA_DIR")),
     lockTimeoutMs: parsePositiveInt(readEnv("NOVELIST_LOCK_TIMEOUT_MS"), 5000, "NOVELIST_LOCK_TIMEOUT_MS", MAX_DURATION_MS),
     lockRetryMs: parsePositiveInt(readEnv("NOVELIST_LOCK_RETRY_MS"), 50, "NOVELIST_LOCK_RETRY_MS", MAX_DURATION_MS),
     lockStaleMs: parsePositiveInt(readEnv("NOVELIST_LOCK_STALE_MS"), 600000, "NOVELIST_LOCK_STALE_MS", MAX_DURATION_MS),
     logLevel: parseLogLevel(readEnv("NOVELIST_LOG_LEVEL")),
     operationTimeoutMs: parsePositiveInt(readEnv("NOVELIST_OPERATION_TIMEOUT_MS"), 300000, "NOVELIST_OPERATION_TIMEOUT_MS", MAX_DURATION_MS),
-    reviewMaxRetries: parseNonNegativeInt(readEnv("NOVELIST_REVIEW_MAX_RETRIES"), 2, "NOVELIST_REVIEW_MAX_RETRIES", MAX_RETRY_COUNT),
     jobRetentionMs: parsePositiveInt(readEnv("NOVELIST_JOB_RETENTION_MS"), 604800000, "NOVELIST_JOB_RETENTION_MS", MAX_DURATION_MS),
     maxConcurrentJobs: parsePositiveInt(readEnv("NOVELIST_MAX_CONCURRENT_JOBS"), 4, "NOVELIST_MAX_CONCURRENT_JOBS", MAX_CONCURRENT_JOBS),
     maxJobs: parsePositiveInt(readEnv("NOVELIST_MAX_JOBS"), 1024, "NOVELIST_MAX_JOBS", MAX_TOTAL_JOBS),
     stdioMaxLineLength: parseStdioMaxLineLength(readEnv("NOVELIST_STDIO_MAX_LINE_LENGTH")),
-    agentProvider: parseAgentProvider(readEnv("NOVELIST_AGENT_PROVIDER")),
-    openaiBaseUrl: parseOpenAiBaseUrl(readEnv("NOVELIST_OPENAI_BASE_URL")),
-    openaiApiKey: parseOpenAiApiKey(readEnv("NOVELIST_OPENAI_API_KEY")),
-    openaiModel: parseOpenAiModel(readEnv("NOVELIST_OPENAI_MODEL")),
-    openaiTimeoutMs: parsePositiveInt(readEnv("NOVELIST_OPENAI_TIMEOUT_MS"), 60000, "NOVELIST_OPENAI_TIMEOUT_MS", MAX_DURATION_MS),
-    openaiMaxRetries: parseNonNegativeInt(readEnv("NOVELIST_OPENAI_MAX_RETRIES"), 2, "NOVELIST_OPENAI_MAX_RETRIES", MAX_RETRY_COUNT),
-    openaiRetryBaseMs: parsePositiveInt(readEnv("NOVELIST_OPENAI_RETRY_BASE_MS"), 250, "NOVELIST_OPENAI_RETRY_BASE_MS", MAX_DURATION_MS),
     epubCheckCommand,
-    epubCheckArgs
+    epubCheckArgs,
+    storageRoot: parseStorageRoot(readEnv("NOVELIST_STORAGE_ROOT")),
+    epubLanguage: parseEpubLanguage(readEnv("NOVELIST_EPUB_LANGUAGE"))
   };
+}
+
+function parseStorageRoot(value: string | undefined): string {
+  const root = emptyToUndefined(value, "NOVELIST_STORAGE_ROOT", 4096);
+  if (!root) {
+    return defaultStorageRoot();
+  }
+  if (!isAbsolute(root)) {
+    throw new Error("NOVELIST_STORAGE_ROOT must be an absolute path.");
+  }
+  return root;
+}
+
+function parseEpubLanguage(value: string | undefined): string {
+  const lang = emptyToUndefined(value, "NOVELIST_EPUB_LANGUAGE", 1024);
+  if (!lang) {
+    return EPUB_LANGUAGE;
+  }
+  if (lang.length > 64) {
+    throw new Error("NOVELIST_EPUB_LANGUAGE must be at most 64 characters.");
+  }
+  return lang;
 }
 
 function envReader(env: Record<string, string | undefined>): (name: string) => string | undefined {
@@ -171,30 +173,6 @@ function validateEnvironmentKey(key: string): void {
   }
 }
 
-function parseDataDir(value: string | undefined): string | undefined {
-  const dataDir = emptyToUndefined(value, "NOVELIST_DATA_DIR", MAX_DATA_DIR_LENGTH + RAW_TRIM_PADDING_LENGTH);
-  if (!dataDir) {
-    return undefined;
-  }
-  if (dataDir.length > MAX_DATA_DIR_LENGTH) {
-    throw new Error(`NOVELIST_DATA_DIR must be at most ${MAX_DATA_DIR_LENGTH} characters.`);
-  }
-  if (utf8ByteLengthUpTo(dataDir, MAX_DATA_DIR_BYTES) > MAX_DATA_DIR_BYTES) {
-    throw new Error(`NOVELIST_DATA_DIR must be at most ${MAX_DATA_DIR_BYTES} UTF-8 bytes.`);
-  }
-  if (/[\u0000-\u001f\u007f]/u.test(dataDir)) {
-    throw new Error("NOVELIST_DATA_DIR must not contain control characters.");
-  }
-  if (!isAbsolute(dataDir)) {
-    throw new Error("NOVELIST_DATA_DIR must be an absolute path.");
-  }
-  const normalized = resolve(dataDir);
-  if (dirname(normalized) === normalized) {
-    throw new Error("NOVELIST_DATA_DIR must not be the filesystem root.");
-  }
-  return normalized;
-}
-
 function parsePositiveInt(value: string | undefined, fallback: number, name: string, max: number): number {
   const raw = trimmedOrUndefined(value, name, MAX_NUMERIC_ENV_RAW_LENGTH);
   if (raw === undefined) {
@@ -254,101 +232,6 @@ function parseLogLevel(value: string | undefined): LogLevel {
     return raw;
   }
   throw new Error("NOVELIST_LOG_LEVEL must be one of debug, info, warn, error, or silent.");
-}
-
-function parseAgentProvider(value: string | undefined): AgentProvider {
-  const raw = trimmedOrUndefined(value, "NOVELIST_AGENT_PROVIDER", MAX_ENUM_ENV_RAW_LENGTH);
-  if (!raw) {
-    return "stub";
-  }
-  if (raw === "stub" || raw === "openai") {
-    return raw;
-  }
-  throw new Error("NOVELIST_AGENT_PROVIDER must be stub or openai.");
-}
-
-function parseOpenAiBaseUrl(value: string | undefined): string {
-  const raw = trimmedOrUndefined(value, "NOVELIST_OPENAI_BASE_URL", MAX_OPENAI_BASE_URL_LENGTH + RAW_TRIM_PADDING_LENGTH) ?? "https://api.openai.com/v1";
-  if (raw.length > MAX_OPENAI_BASE_URL_LENGTH) {
-    throw new Error(`NOVELIST_OPENAI_BASE_URL must be at most ${MAX_OPENAI_BASE_URL_LENGTH} characters.`);
-  }
-  if (utf8ByteLengthUpTo(raw, MAX_OPENAI_BASE_URL_BYTES) > MAX_OPENAI_BASE_URL_BYTES) {
-    throw new Error(`NOVELIST_OPENAI_BASE_URL must be at most ${MAX_OPENAI_BASE_URL_BYTES} UTF-8 bytes.`);
-  }
-  if (/[\u0000-\u001f\u007f]/u.test(raw)) {
-    throw new Error("NOVELIST_OPENAI_BASE_URL must not contain control characters.");
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error("NOVELIST_OPENAI_BASE_URL must be a valid http or https URL.");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("NOVELIST_OPENAI_BASE_URL must be a valid http or https URL.");
-  }
-  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
-    throw new Error("NOVELIST_OPENAI_BASE_URL must use https unless the host is localhost or loopback.");
-  }
-  if (parsed.username || parsed.password) {
-    throw new Error("NOVELIST_OPENAI_BASE_URL must not include username or password credentials.");
-  }
-  if (parsed.search || parsed.hash) {
-    throw new Error("NOVELIST_OPENAI_BASE_URL must not include query strings or fragments.");
-  }
-  const normalized = parsed.toString().replace(/\/$/g, "");
-  if (normalized.length > MAX_OPENAI_BASE_URL_LENGTH) {
-    throw new Error(`NOVELIST_OPENAI_BASE_URL normalized URL must be at most ${MAX_OPENAI_BASE_URL_LENGTH} characters.`);
-  }
-  if (utf8ByteLengthUpTo(normalized, MAX_OPENAI_BASE_URL_BYTES) > MAX_OPENAI_BASE_URL_BYTES) {
-    throw new Error(`NOVELIST_OPENAI_BASE_URL normalized URL must be at most ${MAX_OPENAI_BASE_URL_BYTES} UTF-8 bytes.`);
-  }
-  if (/[\u0000-\u001f\u007f]/u.test(normalized)) {
-    throw new Error("NOVELIST_OPENAI_BASE_URL normalized URL must not contain control characters.");
-  }
-  return normalized;
-}
-
-function isLoopbackHost(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]";
-}
-
-function parseOpenAiModel(value: string | undefined): string {
-  const model = emptyToUndefined(value, "NOVELIST_OPENAI_MODEL", MAX_OPENAI_MODEL_LENGTH + RAW_TRIM_PADDING_LENGTH) ?? "gpt-4.1-mini";
-  if (model.length > MAX_OPENAI_MODEL_LENGTH) {
-    throw new Error(`NOVELIST_OPENAI_MODEL must be at most ${MAX_OPENAI_MODEL_LENGTH} characters.`);
-  }
-  if (utf8ByteLengthUpTo(model, MAX_OPENAI_MODEL_BYTES) > MAX_OPENAI_MODEL_BYTES) {
-    throw new Error(`NOVELIST_OPENAI_MODEL must be at most ${MAX_OPENAI_MODEL_BYTES} UTF-8 bytes.`);
-  }
-  if (/[\u0000-\u001f\u007f]/u.test(model)) {
-    throw new Error("NOVELIST_OPENAI_MODEL must not contain control characters.");
-  }
-  if (/\s/u.test(model)) {
-    throw new Error("NOVELIST_OPENAI_MODEL must not contain whitespace.");
-  }
-  return model;
-}
-
-function parseOpenAiApiKey(value: string | undefined): string | undefined {
-  const apiKey = emptyToUndefined(value, "NOVELIST_OPENAI_API_KEY", MAX_OPENAI_API_KEY_LENGTH + RAW_TRIM_PADDING_LENGTH);
-  if (!apiKey) {
-    return undefined;
-  }
-  if (apiKey.length > MAX_OPENAI_API_KEY_LENGTH) {
-    throw new Error(`NOVELIST_OPENAI_API_KEY must be at most ${MAX_OPENAI_API_KEY_LENGTH} characters.`);
-  }
-  if (utf8ByteLengthUpTo(apiKey, MAX_OPENAI_API_KEY_BYTES) > MAX_OPENAI_API_KEY_BYTES) {
-    throw new Error(`NOVELIST_OPENAI_API_KEY must be at most ${MAX_OPENAI_API_KEY_BYTES} UTF-8 bytes.`);
-  }
-  if (/[\u0000-\u001f\u007f]/u.test(apiKey)) {
-    throw new Error("NOVELIST_OPENAI_API_KEY must not contain control characters.");
-  }
-  if (/\s/u.test(apiKey)) {
-    throw new Error("NOVELIST_OPENAI_API_KEY must not contain whitespace.");
-  }
-  return apiKey;
 }
 
 function parseExecutableCommand(value: string | undefined, name: string): string | undefined {

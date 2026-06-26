@@ -1,20 +1,27 @@
 import type { LogLevel } from "./config.js";
 import { redactErrorMessage, redactInlineSecrets } from "./redaction.js";
+import {
+  LOG_LEVEL_DEBUG_ORDER,
+  LOG_LEVEL_ERROR_ORDER,
+  LOG_LEVEL_INFO_ORDER,
+  LOG_LEVEL_SILENT_ORDER,
+  LOG_LEVEL_WARN_ORDER,
+  MAX_LOG_ARRAY_ITEMS,
+  MAX_LOG_DEPTH,
+  MAX_LOG_KEY_BYTES,
+  MAX_LOG_KEY_CHARS,
+  MAX_LOG_OBJECT_FIELDS,
+  MAX_LOG_STRING_BYTES,
+  MAX_LOG_STRING_CHARS
+} from "./constants.js";
 
 const order: Record<LogLevel, number> = {
-  debug: 10,
-  info: 20,
-  warn: 30,
-  error: 40,
-  silent: 100
+  debug: LOG_LEVEL_DEBUG_ORDER,
+  info: LOG_LEVEL_INFO_ORDER,
+  warn: LOG_LEVEL_WARN_ORDER,
+  error: LOG_LEVEL_ERROR_ORDER,
+  silent: LOG_LEVEL_SILENT_ORDER
 };
-const MAX_LOG_STRING_CHARS = 4000;
-const MAX_LOG_STRING_BYTES = 16 * 1024;
-const MAX_LOG_KEY_CHARS = 256;
-const MAX_LOG_KEY_BYTES = 1024;
-const MAX_LOG_ARRAY_ITEMS = 50;
-const MAX_LOG_OBJECT_FIELDS = 100;
-const MAX_LOG_DEPTH = 8;
 const LOG_CONTROL_CHARS_GLOBAL = /[\u0000-\u001f\u007f]/gu;
 const UNREADABLE_LOG_VALUE = "[Unreadable]";
 const NON_DATA_LOG_PROPERTY = "[NonEnumerableOrAccessor]";

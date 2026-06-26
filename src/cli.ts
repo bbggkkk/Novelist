@@ -4,7 +4,7 @@ import { parseCliArgs } from "./cliArgs.js";
 import { writeCliOutput } from "./cliIo.js";
 import { createStdioServer } from "./mcp.js";
 import { startupErrorJsonLine } from "./startup.js";
-import { PACKAGE_NAME, PACKAGE_VERSION } from "./version.js";
+import { PACKAGE_NAME, PACKAGE_VERSION } from "./packageInfo.js";
 
 const HELP_TEXT = `${PACKAGE_NAME} ${PACKAGE_VERSION}
 

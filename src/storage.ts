@@ -412,6 +412,16 @@ export class NovelStorage {
     return this.readBoundedText(path, MAX_MARKDOWN_FILE_BYTES, "Beat markdown file");
   }
 
+  async beatFileExists(state: VolumeState, chapterNo: number, beatNo: number): Promise<boolean> {
+    const path = this.beatPath(state, chapterNo, beatNo);
+    return exists(path);
+  }
+
+  async epubFileExists(state: VolumeState): Promise<boolean> {
+    const path = this.epubPath(state);
+    return exists(path);
+  }
+
   async readBeatFile(state: VolumeState, chapterNo: number, beatNo: number): Promise<string | undefined> {
     const validated = validateVolumeState(state);
     assertDeclaredBeat(validated, chapterNo, beatNo);

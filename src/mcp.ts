@@ -111,14 +111,7 @@ const startInputSchema = {
   },
   additionalProperties: false
 };
-const locatorInputSchema = {
-  type: "object",
-  properties: {
-    franchiseId: safeIdStringSchema,
-    workId: safeIdStringSchema,
-    volumeId: safeIdStringSchema,
-    current: { type: "boolean" }
-  },
+const locatorConstraint = {
   anyOf: [
     {
       not: {
@@ -149,7 +142,17 @@ const locatorInputSchema = {
         current: { enum: [false] }
       }
     }
-  ],
+  ]
+};
+const locatorInputSchema = {
+  type: "object",
+  properties: {
+    franchiseId: safeIdStringSchema,
+    workId: safeIdStringSchema,
+    volumeId: safeIdStringSchema,
+    current: { type: "boolean" }
+  },
+  ...locatorConstraint,
   additionalProperties: false
 };
 const buildEpubInputSchema = {
@@ -207,6 +210,7 @@ const scopedDocumentInputSchema = {
       additionalProperties: false
     }
   },
+  ...locatorConstraint,
   additionalProperties: false
 };
 const submitBeatInputSchema = {
@@ -222,6 +226,7 @@ const submitBeatInputSchema = {
     text: instructionStringSchema,
     consistencyReport: scopedDocumentInputSchema.properties.consistencyReport
   },
+  ...locatorConstraint,
   additionalProperties: false
 };
 const outlineInputSchema = {
@@ -263,6 +268,7 @@ const outlineInputSchema = {
     },
     consistencyReport: scopedDocumentInputSchema.properties.consistencyReport
   },
+  ...locatorConstraint,
   additionalProperties: false
 };
 const beatDraftInputSchema = {
@@ -277,6 +283,7 @@ const beatDraftInputSchema = {
     beatNo: { type: "integer", minimum: 1, maximum: 5000 },
     text: instructionStringSchema
   },
+  ...locatorConstraint,
   additionalProperties: false
 };
 const rewriteBeatInputSchema = {
@@ -292,6 +299,7 @@ const rewriteBeatInputSchema = {
     text: instructionStringSchema,
     consistencyReport: scopedDocumentInputSchema.properties.consistencyReport
   },
+  ...locatorConstraint,
   additionalProperties: false
 };
 const asyncJobToolSchemas = [

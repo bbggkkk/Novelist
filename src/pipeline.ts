@@ -89,7 +89,7 @@ export class NovelPipeline {
       return this.storage.withCreationLock(franchiseId, workId, volumeId, async () => {
         if (await this.storage.stateExists(franchiseId, workId, volumeId)) {
           const existing = await this.storage.loadState(franchiseId, workId, volumeId);
-          await this.ensurePhaseForExistingArtifacts(existing);
+          await this.recoverAndSaveState(existing);
           return nextResult(existing, await this.contextForPhase(existing));
         }
         const now = new Date().toISOString();
@@ -109,8 +109,7 @@ export class NovelPipeline {
           createdAt: now,
           updatedAt: now
         });
-        await this.ensurePhaseForExistingArtifacts(state);
-        await this.storage.saveState(state);
+        await this.recoverAndSaveState(state);
         return nextResult(state, await this.contextForPhase(state));
       });
     });
@@ -122,8 +121,7 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parseLocatorInput(input));
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
-        await this.ensurePhaseForExistingArtifacts(state);
-        await this.storage.saveState(state);
+        await this.recoverAndSaveState(state);
         return nextResult(state, await this.contextForPhase(state));
       });
     });
@@ -138,7 +136,7 @@ export class NovelPipeline {
       return this.storage.withCreationLock(parsed.franchiseId, parsed.workId, volumeId, async () => {
         if (await this.storage.stateExists(parsed.franchiseId, parsed.workId, volumeId)) {
           const existing = await this.storage.loadState(parsed.franchiseId, parsed.workId, volumeId);
-          await this.ensurePhaseForExistingArtifacts(existing);
+          await this.recoverAndSaveState(existing);
           return nextResult(existing, await this.contextForPhase(existing));
         }
         const base = await this.existingWorkIdentity(parsed.franchiseId, parsed.workId, parsed.franchiseName, parsed.workTitle);
@@ -173,6 +171,7 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
+        await this.recoverAndSaveState(state);
         const scope = worldScopeForPhase(state.phase);
         if (!scope || state.flowStatus !== "needs_input" || (parsed.scope && parsed.scope !== scope)) {
           throw new Error(`Current phase does not accept world submission: phase=${state.phase}, status=${state.flowStatus}.`);
@@ -193,6 +192,7 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
+        await this.recoverAndSaveState(state);
         const scope = settingScopeForPhase(state.phase);
         if (!scope || state.flowStatus !== "needs_input" || (parsed.scope && parsed.scope !== scope)) {
           throw new Error(`Current phase does not accept setting submission: phase=${state.phase}, status=${state.flowStatus}.`);
@@ -213,6 +213,7 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
+        await this.recoverAndSaveState(state);
         if (state.phase !== "volume_outline" || state.flowStatus !== "needs_input") {
           throw new Error(`Current phase does not accept outline submission: phase=${state.phase}, status=${state.flowStatus}.`);
         }
@@ -226,9 +227,9 @@ export class NovelPipeline {
         state.currentChapterNo = 1;
         state.currentBeatNo = 1;
         state.lastConsistencyFailure = undefined;
-        await this.storage.writeOutline(state, parsed.text);
         setPhase(state, "volume_outline", "pending_finalization");
         await this.storage.saveState(state);
+        await this.storage.writeOutline(state, parsed.text);
         return nextResult(state, await this.contextForPhase(state));
       });
     });
@@ -240,6 +241,7 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parseLocatorInput(input));
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
+        await this.recoverAndSaveState(state);
         if (state.phase !== "volume_outline" || state.flowStatus !== "pending_finalization") {
           throw new Error(`Current phase does not accept outline finalization: phase=${state.phase}, status=${state.flowStatus}.`);
         }
@@ -258,6 +260,7 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
+        await this.recoverAndSaveState(state);
         if (state.phase !== "writing" || state.flowStatus !== "needs_input") {
           throw new Error(`Current phase does not accept beat submission: phase=${state.phase}, status=${state.flowStatus}.`);
         }
@@ -302,6 +305,7 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
+        await this.recoverAndSaveState(state);
         if (state.phase !== "writing" || state.flowStatus !== "needs_input") {
           throw new Error(`Current phase does not accept beat draft: phase=${state.phase}, status=${state.flowStatus}.`);
         }
@@ -323,6 +327,7 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parsed);
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
+        await this.recoverAndSaveState(state);
         if (!(state.phase === "writing" || state.phase === "epub" || state.phase === "complete")) {
           throw new Error(`Current phase does not accept beat rewrite: phase=${state.phase}, status=${state.flowStatus}.`);
         }
@@ -365,6 +370,7 @@ export class NovelPipeline {
   async status(input: Partial<LocatorInput> = {}): Promise<ToolResult> {
     return this.withRootRedaction(async () => {
       const state = await this.resolveState(parseLocatorInput(input));
+      await this.recoverStateFromArtifacts(state);
       return { status: state.flowStatus, message: "현재 소설 파이프라인 상태입니다.", data: { ...summarizeState(state), context: await this.contextForPhase(state) } };
     });
   }
@@ -376,6 +382,7 @@ export class NovelPipeline {
       return this.storage.withVolumeLock(parsed.franchiseId, parsed.workId, parsed.volumeId, async () => {
         deadline.assertActive("building epub");
         const state = await this.storage.loadState(parsed.franchiseId, parsed.workId, parsed.volumeId);
+        await this.recoverAndSaveState(state);
         if (state.phase !== "epub" || state.flowStatus !== "ready") {
           throw new Error("EPUB can only be built when phase=epub and status=ready.");
         }
@@ -417,41 +424,110 @@ export class NovelPipeline {
       const resolved = await this.resolveState(parseLocatorInput(input));
       return this.storage.withVolumeLock(resolved.franchiseId, resolved.workId, resolved.volumeId, async () => {
         const state = await this.storage.loadState(resolved.franchiseId, resolved.workId, resolved.volumeId);
+        await this.recoverAndSaveState(state);
         const scope = kind === "world" ? worldScopeForPhase(state.phase) : settingScopeForPhase(state.phase);
         if (!scope || state.flowStatus !== "pending_finalization") {
           throw new Error(`Current phase does not accept ${kind} finalization: phase=${state.phase}, status=${state.flowStatus}.`);
         }
         setPhase(state, nextPhase(state.phase), "needs_input");
-        await this.ensurePhaseForExistingArtifacts(state);
+        await this.recoverStateFromArtifacts(state);
         await this.storage.saveState(state);
         return nextResult(state, await this.contextForPhase(state));
       });
     });
   }
 
-  private async ensurePhaseForExistingArtifacts(state: VolumeState): Promise<void> {
-    for (;;) {
-      if (state.phase === "writing") {
-        if (findCurrentBeat(state)) setPhase(state, "writing", "needs_input");
-        else setPhase(state, "epub", "ready");
-        return;
-      }
-      if (state.phase === "epub" || state.phase === "complete") return;
-      if (state.phase === "volume_outline") {
-        const exists = await this.storage.readOutlineFile(state);
-        setPhase(state, "volume_outline", exists && state.chapters.length > 0 ? "pending_finalization" : "needs_input");
-        return;
-      }
-      const worldScope = worldScopeForPhase(state.phase);
-      const settingScope = settingScopeForPhase(state.phase);
-      const exists = worldScope
-        ? await this.storage.readScopedWorldFile(state, worldScope)
-        : settingScope
-          ? await this.storage.readScopedSettingFile(state, settingScope)
-          : undefined;
-      setPhase(state, state.phase, exists ? "pending_finalization" : "needs_input");
-      return;
+  private async recoverStateFromArtifacts(state: VolumeState): Promise<boolean> {
+    let changed = false;
+    if (state.phase === "writing") {
+      changed = await this.recoverWritingPhase(state) || changed;
+      if (findCurrentBeat(state)) setPhase(state, "writing", "needs_input");
+      else setPhase(state, "epub", "ready");
+      return changed;
     }
+    if (state.phase === "epub" || state.phase === "complete") {
+      changed = await this.recoverFinalPhases(state) || changed;
+      return changed;
+    }
+    if (state.phase === "volume_outline") {
+      const exists = await this.storage.readOutlineFile(state);
+      if (exists && state.chapters.length > 0) {
+        setPhase(state, "volume_outline", "pending_finalization");
+      } else if (exists && state.chapters.length === 0) {
+        setPhase(state, "volume_outline", "needs_input");
+      } else {
+        setPhase(state, "volume_outline", "needs_input");
+      }
+      return changed;
+    }
+    const worldScope = worldScopeForPhase(state.phase);
+    const settingScope = settingScopeForPhase(state.phase);
+    const exists = worldScope
+      ? await this.storage.readScopedWorldFile(state, worldScope)
+      : settingScope
+        ? await this.storage.readScopedSettingFile(state, settingScope)
+        : undefined;
+    setPhase(state, state.phase, exists ? "pending_finalization" : "needs_input");
+    return changed;
+  }
+
+  private async recoverAndSaveState(state: VolumeState): Promise<void> {
+    await this.recoverStateFromArtifacts(state);
+    await this.storage.saveState(state);
+  }
+
+  private async recoverWritingPhase(state: VolumeState): Promise<boolean> {
+    let changed = false;
+    for (const beat of state.chapters.flatMap((chapter) => chapter.beats)) {
+      if (beat.status === "complete") continue;
+      const fileExists = await this.storage.beatFileExists(state, beat.chapterNo, beat.beatNo);
+      if (!fileExists) {
+        break;
+      }
+      beat.status = "complete";
+      changed = true;
+    }
+    if (changed) {
+      const nextIncomplete = state.chapters.flatMap((chapter) => chapter.beats).find((beat) => beat.status !== "complete");
+      if (nextIncomplete) {
+        state.currentChapterNo = nextIncomplete.chapterNo;
+        state.currentBeatNo = nextIncomplete.beatNo;
+      } else {
+        const last = state.chapters.flatMap((chapter) => chapter.beats).at(-1);
+        if (last) {
+          state.currentChapterNo = last.chapterNo;
+          state.currentBeatNo = last.beatNo;
+        }
+      }
+      state.updatedAt = new Date().toISOString();
+    }
+    return changed;
+  }
+
+  private async recoverFinalPhases(state: VolumeState): Promise<boolean> {
+    let changed = false;
+    let allBeatsComplete = state.chapters.every((chapter) => chapter.beats.every((beat) => beat.status === "complete"));
+    if (!allBeatsComplete) {
+      await this.recoverWritingPhase(state);
+      const firstIncomplete = state.chapters.flatMap((chapter) => chapter.beats).find((beat) => beat.status !== "complete");
+      if (firstIncomplete) {
+        state.currentChapterNo = firstIncomplete.chapterNo;
+        state.currentBeatNo = firstIncomplete.beatNo;
+        setPhase(state, "writing", "needs_input");
+        changed = true;
+        return changed;
+      }
+      allBeatsComplete = state.chapters.every((chapter) => chapter.beats.every((beat) => beat.status === "complete"));
+    }
+    const epubExists = await this.storage.epubFileExists(state);
+    if (state.phase === "complete" && !epubExists) {
+      setPhase(state, "epub", "ready");
+      changed = true;
+    } else if (state.phase === "epub" && epubExists && allBeatsComplete) {
+      setPhase(state, "complete", "complete");
+      changed = true;
+    }
+    return changed;
   }
 
   private async contextForPhase(state: VolumeState): Promise<Record<string, unknown>> {
@@ -539,7 +615,7 @@ function parseStartVolumeInput(input: unknown): StartVolumeInput {
 
 function parseLocatorInput(input: unknown): LocatorInput {
   const object = assertShape(input ?? {}, "novel_next arguments", { franchiseId: "optionalString", workId: "optionalString", volumeId: "optionalString", current: "optionalBoolean" });
-  return { franchiseId: object.franchiseId === undefined ? undefined : assertSafeId(object.franchiseId, "franchiseId"), workId: object.workId === undefined ? undefined : assertSafeId(object.workId, "workId"), volumeId: object.volumeId === undefined ? undefined : assertSafeId(object.volumeId, "volumeId"), current: object.current as boolean | undefined };
+  return parseLocatorFields(object);
 }
 
 function parseSubmitWorldInput(input: unknown): SubmitWorldInput { const object = assertSubmitDocument(input, "novel_submit_world arguments"); return { ...parseLocatorFields(object), scope: parseOptionalScope(object.scope, "world"), text: boundedDocument(object.text, "text"), consistencyReport: validateConsistencyReportInput(object.consistencyReport) }; }
@@ -557,7 +633,17 @@ function parseSaveBeatDraftInput(input: unknown): SaveBeatDraftInput { const obj
 function parseRewriteBeatInput(input: unknown): RewriteBeatInput { const object = assertObject(input, "novel_rewrite_beat arguments"); return { ...parseLocatorFields(object), chapterNo: requiredPositiveInteger(object.chapterNo, "chapterNo"), beatNo: requiredPositiveInteger(object.beatNo, "beatNo"), text: boundedDocument(object.text, "text"), consistencyReport: validateConsistencyReportInput(object.consistencyReport) }; }
 
 function assertSubmitDocument(input: unknown, label: string): Record<string, unknown> { return assertObject(input, label); }
-function parseLocatorFields(object: Record<string, unknown>): LocatorInput { return { franchiseId: object.franchiseId === undefined ? undefined : assertSafeId(object.franchiseId, "franchiseId"), workId: object.workId === undefined ? undefined : assertSafeId(object.workId, "workId"), volumeId: object.volumeId === undefined ? undefined : assertSafeId(object.volumeId, "volumeId"), current: object.current as boolean | undefined }; }
+function parseLocatorFields(object: Record<string, unknown>): LocatorInput {
+  const franchiseId = object.franchiseId === undefined ? undefined : assertSafeId(object.franchiseId, "franchiseId");
+  const workId = object.workId === undefined ? undefined : assertSafeId(object.workId, "workId");
+  const volumeId = object.volumeId === undefined ? undefined : assertSafeId(object.volumeId, "volumeId");
+  if (object.current !== undefined && typeof object.current !== "boolean") throw new Error("current must be a boolean.");
+  const current = object.current;
+  if (current && (franchiseId !== undefined || workId !== undefined || volumeId !== undefined)) {
+    throw new Error("current=true cannot be combined with explicit franchiseId, workId, or volumeId.");
+  }
+  return { franchiseId, workId, volumeId, current };
+}
 function parseOptionalScope(value: unknown, label: string): WorldScope | SettingScope | undefined { if (value === undefined) return undefined; if (value === "franchise" || value === "work" || value === "volume") return value; throw new Error(`${label} scope must be franchise, work, or volume.`); }
 function optionalPositiveInteger(value: unknown, label: string): number | undefined { if (value === undefined) return undefined; if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) throw new Error(`${label} must be a positive integer.`); return value; }
 function requiredPositiveInteger(value: unknown, label: string): number { const parsed = optionalPositiveInteger(value, label); if (parsed === undefined) throw new Error(`${label} is required.`); return parsed; }

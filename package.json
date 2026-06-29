@@ -1,41 +1,37 @@
 {
-  "name": "novelist-mcp",
-  "version": "0.1.0",
-  "description": "MCP server for resumable AI-assisted novel writing pipelines.",
-  "license": "MIT",
+  "name": "novelist-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP Server Boilerplate — Model Context Protocol",
+  "main": "dist/index.js",
   "type": "module",
-  "engines": {
-    "node": ">=22.0.0"
-  },
-  "main": "dist/src/index.js",
-  "types": "dist/src/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/src/index.d.ts",
-      "import": "./dist/src/index.js"
-    }
-  },
-  "files": [
-    "dist/src",
-    "README.md",
-    "package.json"
-  ],
-  "bin": {
-    "novelist-mcp": "dist/src/cli.js"
-  },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/src/cli.js', 0o755)\"",
-    "test": "npm run build",
-    "pack:check": "npm run build && npm pack --dry-run --json --cache /tmp/novelist-npm-cache",
-    "verify": "npm test && npm run pack:check",
-    "prepare": "npm run build",
-    "start": "node dist/src/cli.js"
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup src/index.ts --format esm --clean",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "inspect": "HOST=0.0.0.0 npx @modelcontextprotocol/inspector -- tsx src/index.ts"
   },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
-  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "server"
+  ],
+  "author": "",
+  "license": "ISC",
   "devDependencies": {
-    "typescript": "^6.0.3"
+    "@types/node": "^26.0.1",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.9.0",
+    "zod": "^3.24.0"
+  },
+  "engines": {
+    "node": "^20.0.0"
   }
 }

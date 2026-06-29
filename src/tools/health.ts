@@ -1,15 +1,15 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp";
+import { createInputSchema } from "../util/inputSchema";
 
 export function registerHealthTool(server: McpServer) {
   server.registerTool(
     "health",
     {
       description: "MCP 서버 상태를 확인합니다.",
-      inputSchema: {
-        workspace: z.string().describe("작업중인 프로젝트 폴더"),
-        detail: z.boolean().optional().describe("상세 정보 포함 여부"),
-      },
+      inputSchema: createInputSchema({
+        detail: z.boolean().optional().describe("상세 정보 포함 여부")
+      })
     },
     async ({ detail, workspace }) => {
       const base = {
